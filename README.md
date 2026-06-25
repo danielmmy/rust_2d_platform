@@ -158,3 +158,9 @@ graph (every room parses and links to real rooms), the RON round-trip, and the
 builder's default-room generator are unit-tested. The **feel and visuals are yours
 to judge by running it** — they can't be verified headlessly, and the room layouts
 are deliberately simple scaffolds to build on.
+
+## Changelog
+
+- **2026-06-25** — World map: room-name labels are now light grey backed by a
+  darker-grey silhouette (an outline of offset copies) instead of plain white, so
+  they stay legible over bright room thumbnails.

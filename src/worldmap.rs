@@ -252,8 +252,9 @@ fn draw_overview(
         };
         let pos = cell_center(center, gx, gy, cols, rows);
         draw_room(commands, pos, cell * 0.82, map, 91.0);
-        // Display name (or key) along the bottom of each thumbnail.
-        label(
+        // Display name (or key) along the bottom of each thumbnail. Drawn with a
+        // silhouette so it stays legible over bright thumbnails.
+        room_label(
             commands,
             center,
             pos - center + Vec2::new(0.0, -cell.y * 0.36),
@@ -379,6 +380,42 @@ fn label(commands: &mut Commands, center: Vec2, offset: Vec2, size: f32, text: &
         TextColor(Color::srgb(0.9, 0.92, 0.96)),
         Transform::from_xyz(center.x + offset.x, center.y + offset.y, 95.0),
     ));
+}
+
+/// Room-name colours: light grey text over a darker-grey silhouette, so names
+/// stay readable over bright thumbnails instead of washing out as plain white.
+const ROOM_LABEL_TEXT: Color = Color::srgb(0.85, 0.86, 0.88);
+const ROOM_LABEL_SILHOUETTE: Color = Color::srgb(0.12, 0.12, 0.14);
+
+/// Draw a room name as light-grey text backed by a darker-grey silhouette —
+/// offset copies in each diagonal form an outline that lifts it off any
+/// thumbnail colour.
+fn room_label(commands: &mut Commands, center: Vec2, offset: Vec2, size: f32, text: &str) {
+    let base = center + offset;
+    let spread = (size * 0.08).max(1.0); // outline thickness, scaled to the font
+    let glyph = |commands: &mut Commands, pos: Vec2, z: f32, color: Color| {
+        commands.spawn((
+            WorldMapEntity,
+            Text2d::new(text),
+            TextFont {
+                font_size: FontSize::Px(size),
+                ..default()
+            },
+            TextColor(color),
+            Transform::from_xyz(pos.x, pos.y, z),
+        ));
+    };
+    for dx in [-spread, spread] {
+        for dy in [-spread, spread] {
+            glyph(
+                commands,
+                base + Vec2::new(dx, dy),
+                94.0,
+                ROOM_LABEL_SILHOUETTE,
+            );
+        }
+    }
+    glyph(commands, base, 95.0, ROOM_LABEL_TEXT);
 }
 
 // --- helpers -------------------------------------------------------------
