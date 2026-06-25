@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use crate::hazards::RockSprite;
 use crate::menu::Paused;
 use crate::state::GameState;
-use crate::world::{CurrentRoom, GameAssets, MapData, START_MARKER, map_fs_path};
+use crate::world::{CurrentRoom, GameAssets, MapData, START_MARKER, Teleport, map_fs_path};
 use crate::worldmap::MapView;
 
 /// The paint brushes, by the grid character they write.
@@ -70,6 +70,7 @@ struct EditBuffer {
     south: String,
     east: String,
     west: String,
+    teleports: Vec<Teleport>, // preserved across edits (no painting UI yet)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -859,6 +860,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         south: String::new(),
         east: String::new(),
         west: String::new(),
+        teleports: Vec::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -914,6 +916,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         south: String::new(),
         east: String::new(),
         west: String::new(),
+        teleports: Vec::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -986,6 +989,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         south: map.south.clone(),
         east: map.east.clone(),
         west: map.west.clone(),
+        teleports: map.teleports.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1002,6 +1006,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         south: buffer.south.clone(),
         east: buffer.east.clone(),
         west: buffer.west.clone(),
+        teleports: buffer.teleports.clone(),
         bg: buffer.bg,
         tiles: buffer
             .grid

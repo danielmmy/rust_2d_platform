@@ -39,7 +39,6 @@ impl Value {
     }
 
     /// Read this value as a char, or fail if it isn't one.
-    #[allow(dead_code)] // part of the reader's API; exercised by tests
     pub fn as_char(&self) -> Result<char, RonError> {
         match self {
             Value::Char(c) => Ok(*c),

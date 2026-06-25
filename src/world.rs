@@ -19,9 +19,18 @@ use bevy::prelude::*;
 use crate::GameSet;
 use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::physics::{Solids, TILE};
-use crate::player::{JumpState, Player, Velocity};
+use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
 use crate::state::GameState;
+
+/// A teleporter pad declared by a room: the grid `glyph` that marks it, and the
+/// room it links `to`. The destination is that room's pad with the same glyph, so
+/// a linked pair shares one glyph and points `to` each other.
+#[derive(Clone)]
+pub struct Teleport {
+    pub glyph: char,
+    pub to: String,
+}
 
 /// One map's data, read from a `.map.ron` file by [`MapLoader`].
 #[derive(Asset, TypePath, Clone)]
@@ -42,6 +51,8 @@ pub struct MapData {
     pub east: String,
     /// Neighbouring map reached by walking off the left edge (empty = none).
     pub west: String,
+    /// Teleporter pads in this room (empty = none).
+    pub teleports: Vec<Teleport>,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -77,6 +88,20 @@ impl MapData {
             .map(|v| Ok(v.as_str()?.to_string()))
             .collect::<Result<Vec<_>, RonError>>()?;
 
+        let teleports = match value.try_field("teleports") {
+            Some(list) => list
+                .as_list()?
+                .iter()
+                .map(|t| {
+                    Ok(Teleport {
+                        glyph: t.field("glyph")?.as_char()?,
+                        to: t.field("to")?.as_str()?.to_string(),
+                    })
+                })
+                .collect::<Result<Vec<_>, RonError>>()?,
+            None => Vec::new(),
+        };
+
         Ok(MapData {
             name: optional_str("name")?,
             solid: value.field("solid")?.as_str()?.to_string(),
@@ -86,6 +111,7 @@ impl MapData {
             south: optional_str("south")?,
             east: optional_str("east")?,
             west: optional_str("west")?,
+            teleports,
             bg,
             tiles,
         })
@@ -112,10 +138,15 @@ impl MapData {
             .iter()
             .map(|row| format!("        \"{row}\",\n"))
             .collect();
+        let teleports: String = self
+            .teleports
+            .iter()
+            .map(|t| format!("        (glyph: '{}', to: \"{}\"),\n", t.glyph, t.to))
+            .collect();
         format!(
             "(\n    name: \"{}\",\n    solid: \"{}\",\n    spikes: \"{}\",\n    rocks: \"{}\",\n    \
              north: \"{}\",\n    south: \"{}\",\n    east: \"{}\",\n    west: \"{}\",\n    \
-             bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
+             teleports: [\n{teleports}    ],\n    bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
             self.spikes,
@@ -188,11 +219,38 @@ enum Entry {
     /// Arrived by walking off an edge; carries the direction travelled and the
     /// player's position along that edge (used to line up horizontal corridors).
     FromEdge(Dir, f32),
+    /// Arrived through a teleporter; place the player on the destination room's
+    /// pad carrying this glyph.
+    Teleport(char),
 }
 
 /// Tags every entity belonging to the current map (despawned on transition).
 #[derive(Component)]
 pub(crate) struct MapEntity;
+
+/// A spawned teleporter pad: stepping onto it sends the player to `to`, arriving
+/// on that room's pad carrying the same `glyph`.
+#[derive(Component)]
+struct Teleporter {
+    to: String,
+    glyph: char,
+}
+
+/// Whether the player has cleared every teleporter pad since the last teleport, so
+/// a pad fires only on entry — not while standing on the one you arrived on.
+#[derive(Resource)]
+struct TeleportArmed(bool);
+
+impl Default for TeleportArmed {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// Teleporter pad colour (a glowing square — no sprite asset needed).
+const TELEPORT_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
+/// Half-extents of a teleporter's trigger area.
+const TELEPORT_HALF: Vec2 = Vec2::new(TILE * 0.45, TILE * 0.5);
 
 #[derive(Resource)]
 pub(crate) struct GameAssets {
@@ -287,6 +345,7 @@ impl Plugin for WorldPlugin {
             .init_resource::<TransitionCooldown>()
             .init_resource::<CurrentRoom>()
             .init_resource::<RoomView>()
+            .init_resource::<TeleportArmed>()
             .add_systems(Startup, load_assets)
             .add_systems(Update, wait_for_load.run_if(in_state(GameState::Loading)))
             .add_systems(OnEnter(GameState::Playing), enter_playing)
@@ -296,6 +355,7 @@ impl Plugin for WorldPlugin {
                     handle_load_map,
                     tick_cooldown,
                     detect_transitions.in_set(GameSet::Transitions),
+                    detect_teleport.in_set(GameSet::Transitions),
                 )
                     .run_if(in_state(GameState::Playing)),
             );
@@ -377,8 +437,9 @@ fn enter_playing(
     });
 }
 
-/// Where the player lands when a room loads, given how they entered it.
-fn entry_position(entry: &Entry, room: Vec2, start: Vec2) -> Vec2 {
+/// Where the player lands when a room loads, given how they entered it. `teleport`
+/// is the located destination pad (falls back to `start` if the glyph is missing).
+fn entry_position(entry: &Entry, room: Vec2, start: Vec2, teleport: Vec2) -> Vec2 {
     match entry {
         Entry::Start => start,
         // Walked east → appear at the west corridor (and vice-versa), keeping the
@@ -392,6 +453,8 @@ fn entry_position(entry: &Entry, room: Vec2, start: Vec2) -> Vec2 {
         Entry::FromEdge(Dir::North, _) => {
             Vec2::new((SHAFT_COL - 2.0) * TILE + TILE / 2.0, TILE * 2.0)
         }
+        // Teleported → land on the destination room's matching pad.
+        Entry::Teleport(_) => teleport,
     }
 }
 
@@ -406,11 +469,17 @@ fn handle_load_map(
     mut current: ResMut<CurrentRoom>,
     mut room_view: ResMut<RoomView>,
     mut respawn: ResMut<RespawnPoint>,
+    mut armed: ResMut<TeleportArmed>,
     existing: Query<Entity, With<MapEntity>>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
 ) {
     let Some(load) = events.read().last().cloned() else {
         return;
+    };
+    // The pad glyph to land on when arriving via a teleporter, if any.
+    let arrival_glyph = match &load.entry {
+        Entry::Teleport(glyph) => Some(*glyph),
+        _ => None,
     };
 
     // Clear the old room.
@@ -436,6 +505,7 @@ fn handle_load_map(
         .max()
         .unwrap_or(0) as i32;
     let mut start_pos = Vec2::new(2.0 * TILE, 2.0 * TILE);
+    let mut teleport_pos = start_pos;
 
     for (r, line) in map.tiles.iter().enumerate() {
         let row = height - 1 - r as i32; // flip so row 0 is the top, y points up
@@ -481,12 +551,29 @@ fn handle_load_map(
                     RockSpawner { timer },
                     Transform::from_xyz(center.x, center.y, 1.0),
                 ));
+            } else if let Some(tp) = map.teleports.iter().find(|t| t.glyph == ch) {
+                if arrival_glyph == Some(ch) {
+                    teleport_pos = center;
+                }
+                commands.spawn((
+                    MapEntity,
+                    Teleporter {
+                        to: tp.to.clone(),
+                        glyph: ch,
+                    },
+                    Sprite {
+                        color: TELEPORT_COLOR,
+                        custom_size: Some(Vec2::splat(TILE)),
+                        ..default()
+                    },
+                    Transform::from_xyz(center.x, center.y, 1.0),
+                ));
             }
         }
     }
 
     let room = Vec2::new(width as f32 * TILE, height as f32 * TILE);
-    let pos = entry_position(&load.entry, room, start_pos);
+    let pos = entry_position(&load.entry, room, start_pos, teleport_pos);
 
     // Record the room's name, neighbours + size for edge detection and the camera.
     *current = CurrentRoom {
@@ -508,6 +595,9 @@ fn handle_load_map(
         velocity.0 = Vec2::ZERO;
     }
     cooldown.0 = 0.4;
+    // Disarm teleporters until the player steps clear, so they don't immediately
+    // re-fire on the pad they just landed on (or one under the entry point).
+    armed.0 = false;
 }
 
 fn tick_cooldown(time: Res<Time>, mut cooldown: ResMut<TransitionCooldown>) {
@@ -559,6 +649,43 @@ fn detect_transitions(
     }
 }
 
+/// Send the player to a linked room when they step onto a teleporter pad. A pad
+/// fires only on entry: [`TeleportArmed`] re-arms once the player has cleared every
+/// pad, so the one you land on doesn't bounce you straight back.
+fn detect_teleport(
+    mut armed: ResMut<TeleportArmed>,
+    teleporters: Query<(&Transform, &Teleporter)>,
+    player: Query<&Transform, With<Player>>,
+    mut load: MessageWriter<LoadMap>,
+) {
+    let Ok(player_tf) = player.single() else {
+        return;
+    };
+    let player_pos = player_tf.translation.truncate();
+
+    let on_pad = teleporters.iter().find_map(|(tf, tp)| {
+        let delta = (tf.translation.truncate() - player_pos).abs();
+        let touching =
+            delta.x < TELEPORT_HALF.x + PLAYER_HALF.x && delta.y < TELEPORT_HALF.y + PLAYER_HALF.y;
+        touching.then(|| (tp.to.clone(), tp.glyph))
+    });
+
+    match on_pad {
+        // Clear of every pad → ready to fire on the next one entered.
+        None => armed.0 = true,
+        // Stepped onto a pad while armed → teleport and disarm.
+        Some((to, glyph)) if armed.0 => {
+            armed.0 = false;
+            load.write(LoadMap {
+                map: to,
+                entry: Entry::Teleport(glyph),
+            });
+        }
+        // On a pad but not armed (e.g. just arrived) → wait until we step off.
+        Some(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,6 +725,14 @@ mod tests {
                     );
                 }
             }
+            // Teleporters must point at a real room too.
+            for tp in &map.teleports {
+                assert!(
+                    maps.contains_key(&tp.to),
+                    "{name}: teleporter links to unknown room '{}'",
+                    tp.to
+                );
+            }
         }
 
         // The starting room must contain the start marker.
@@ -620,10 +755,14 @@ mod tests {
             south: String::new(),
             east: "r1_0".to_string(),
             west: String::new(),
+            teleports: vec![Teleport {
+                glyph: 'T',
+                to: "r1_1".to_string(),
+            }],
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
-                "#.@#".to_string(),
+                "#T@#".to_string(),
                 "#^R#".to_string(),
                 "####".to_string(),
             ],
@@ -637,5 +776,8 @@ mod tests {
         assert_eq!(parsed.east, original.east);
         assert_eq!(parsed.bg, original.bg);
         assert_eq!(parsed.tiles, original.tiles);
+        assert_eq!(parsed.teleports.len(), 1);
+        assert_eq!(parsed.teleports[0].glyph, 'T');
+        assert_eq!(parsed.teleports[0].to, "r1_1");
     }
 }

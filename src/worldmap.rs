@@ -645,6 +645,8 @@ fn tile_color(ch: char, map: &MapData) -> Option<Color> {
         Some(Color::srgb(0.9, 0.3, 0.3))
     } else if map.rocks.contains(ch) {
         Some(Color::srgb(0.85, 0.6, 0.3))
+    } else if map.teleports.iter().any(|t| t.glyph == ch) {
+        Some(Color::srgb(0.45, 0.85, 1.0))
     } else {
         None
     }

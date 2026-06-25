@@ -63,6 +63,12 @@ doors and **side corridors** are the left/right doors. Hazards are sparse and
 avoidable: **ground spikes** in dead-end corners and **falling rocks** in the
 open. Touching one respawns you at the room's entry, instantly (Celeste-style).
 
+Besides the edge doors, rooms can be wired together with **teleporters** — pads
+that link two distant rooms directly. Step onto one and you reappear on its
+partner's pad in the linked room (a pair shares a glyph and points at each other,
+so it's a two-way portal). The demo links the start room `r0_0` to the far corner
+`r3_2`; teleporters show up on the world map as cyan cells.
+
 ## Extending it
 
 The structure is plugin-per-concern:
@@ -99,10 +105,18 @@ room just names the neighbour on each side (empty = a wall / bottomless edge):
     south:  "",                  // …bottom edge
     east:   "r1_0",              // …right edge
     west:   "",                  // …left edge
+    teleports: [                 // teleporter pads (optional)
+        (glyph: 'T', to: "r3_2"),// step on a `T` cell → arrive on r3_2's `T` pad
+    ],
     bg:     [0.32, 0.16, 0.16],  // background colour [r, g, b] in 0..1
-    tiles: [ "######", "#.@..#", "######" ],   // grid, top to bottom; `@` = start
+    tiles: [ "######", "#T@.#", "######" ],   // grid, top to bottom; `@` = start
 )
 ```
+
+A teleporter is just another glyph in the grid (use any unused character). For a
+two-way link, give both rooms a pad with the **same glyph**, each pointing `to`
+the other; the destination pad is found by matching that glyph. The pad only fires
+as you step **onto** it, so you can stand on the one you arrive on.
 
 Each room has an optional **display name** (e.g. "Forest Glade", "Meadow") shown
 on the world map and in the builder; when empty it falls back to the file key.
@@ -151,6 +165,11 @@ standard-size (40×22) rooms get their doors opened/sealed to match. Rooms can s
 be **any size** in the tile view, but a custom-sized room manages its own doors.
 The builder is `#[cfg(debug_assertions)]`, so it's compiled out of `--release`.
 
+The builder has no teleporter brush yet, but it **preserves** a room's `teleports`
+through edits and saves — so hand-author them in the `.map.ron`, then keep using
+the builder for tiles. (Reordering rooms with `G` doesn't yet remap teleport
+targets, so re-check `to:` after a move.)
+
 ### Replace the art
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
@@ -167,6 +186,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Added **teleporter pads**: a room can declare
+  `teleports: [(glyph, to)]` to link to a distant room, stepping onto a pad warps
+  the player to the partner room's pad (a shared glyph + mutual `to` makes it
+  two-way). The demo links `r0_0` ↔ `r3_2`; pads show as cyan on the world map.
+  The level builder preserves teleports through edits.
 - **2026-06-25** — World map: now has three zoom levels — a scrollable 4×3
   **Window** of rooms (the new default, so the map no longer shrinks to fit as
   rooms are added), the full-**World** overview, and the single-**Room** detail
