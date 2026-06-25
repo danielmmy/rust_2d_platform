@@ -1,11 +1,17 @@
 //! A pause-screen world map (toggle with `M` or the gamepad `Start` button).
 //!
-//! It shows every room "glued together" in a grid sized from the room names
-//! (`r{col}_{row}`), so added rooms expand it — each drawn as a tiny minimap in its
-//! own background colour and labelled with its display name, with the room you're
-//! in highlighted.
-//! Move the selection with the arrows / D-pad and press jump (`Space` / `South`)
-//! to **zoom** the selected room to full detail; press it again to zoom back out.
+//! Rooms are laid out in a grid sized from their names (`r{col}_{row}`). The map
+//! has **three zoom levels**, stepped through with jump (zoom in) and `X` (zoom
+//! out):
+//!
+//! * **Window** (the default) — a scrollable `4×3` window of rooms, so each stays
+//!   readable however many rooms exist; it scrolls to keep the selection in view.
+//! * **World** — the whole map at once (every room glued together, shrinking to
+//!   fit), for getting your bearings.
+//! * **Room** — one room blown up to full detail; arrows step to its neighbours.
+//!
+//! Each room is drawn as a minimap in its own background colour, labelled with its
+//! display name, with the room you're in highlighted.
 //!
 //! Gameplay is paused while the map is open (the gameplay [`GameSet`](crate::GameSet)
 //! chain is gated on [`MapView::Closed`]). The overlay is drawn with plain sprites
@@ -25,12 +31,41 @@ pub enum MapView {
     Open,
 }
 
-/// The currently highlighted room and whether we're zoomed into it.
+/// Which of the three zoom levels the map is showing. Stepping in goes
+/// `World → Window → Room`; stepping out reverses it (and both ends clamp).
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Zoom {
+    /// The whole map at once (every room, shrunk to fit).
+    World,
+    /// A scrollable window of rooms — the default; rooms stay readable.
+    #[default]
+    Window,
+    /// One room blown up to full detail.
+    Room,
+}
+
+impl Zoom {
+    fn zoom_in(self) -> Self {
+        match self {
+            Zoom::World => Zoom::Window,
+            Zoom::Window | Zoom::Room => Zoom::Room,
+        }
+    }
+
+    fn zoom_out(self) -> Self {
+        match self {
+            Zoom::Room => Zoom::Window,
+            Zoom::Window | Zoom::World => Zoom::World,
+        }
+    }
+}
+
+/// The currently highlighted room and which zoom level we're viewing it at.
 #[derive(Resource, Default)]
 struct MapCursor {
     gx: i32,
     gy: i32,
-    zoomed: bool,
+    zoom: Zoom,
 }
 
 /// Tags every entity that makes up the overlay (despawned when it closes).
@@ -45,6 +80,10 @@ struct CursorHighlight;
 // and row counts are derived from the room names, so new rooms expand it.
 const GRID_W: f32 = 840.0;
 const GRID_H: f32 = 372.0;
+/// The `Window` zoom level shows a fixed window of this many room cells, scrolling
+/// to follow the selection (so the map never shrinks to fit as rooms are added).
+const VIEW_COLS: i32 = 4;
+const VIEW_ROWS: i32 = 3;
 
 pub struct WorldMapPlugin;
 
@@ -92,9 +131,9 @@ fn open_map(
         cursor.gx = gx;
         cursor.gy = gy;
     }
-    cursor.zoomed = false;
+    cursor.zoom = Zoom::Window;
     let center = camera_center(&camera);
-    draw_overview(
+    draw_level(
         &mut commands,
         center,
         &assets,
@@ -112,7 +151,7 @@ fn close_map(
     for entity in &overlay {
         commands.entity(entity).despawn();
     }
-    cursor.zoomed = false;
+    cursor.zoom = Zoom::Window;
 }
 
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
@@ -152,11 +191,13 @@ fn navigate_map(
         &gamepads,
         GamepadButton::DPadDown,
     );
-    let confirm = keys.just_pressed(KeyCode::Space)
+    let zoom_in = keys.just_pressed(KeyCode::Space)
         || keys.just_pressed(KeyCode::KeyZ)
         || gamepads
             .iter()
             .any(|g| g.just_pressed(GamepadButton::South));
+    let zoom_out = keys.just_pressed(KeyCode::KeyX)
+        || gamepads.iter().any(|g| g.just_pressed(GamepadButton::East));
 
     let (cols, rows) = grid_dims(&assets.room_names);
     let nx = (cursor.gx + i32::from(right) - i32::from(left)).clamp(0, cols - 1);
@@ -164,31 +205,34 @@ fn navigate_map(
     let moved = (nx, ny) != (cursor.gx, cursor.gy);
     cursor.gx = nx;
     cursor.gy = ny;
-    if confirm {
-        cursor.zoomed = !cursor.zoomed;
+
+    let zoom_before = cursor.zoom;
+    if zoom_in {
+        cursor.zoom = cursor.zoom.zoom_in();
+    } else if zoom_out {
+        cursor.zoom = cursor.zoom.zoom_out();
     }
+    let zoom_changed = cursor.zoom != zoom_before;
 
     let center = camera_center(&camera);
 
-    if confirm || (moved && cursor.zoomed) {
-        // Switching view (or zoomed room) → rebuild the overlay.
+    // The window scrolls and the room view swaps rooms, so both must redraw when
+    // the selection moves; the full-world view can just slide its outline.
+    let follows_cursor = matches!(cursor.zoom, Zoom::Window | Zoom::Room);
+    if zoom_changed || (moved && follows_cursor) {
         for entity in &overlay {
             commands.entity(entity).despawn();
         }
-        if cursor.zoomed {
-            draw_zoom(&mut commands, center, &assets, &maps, &cursor);
-        } else {
-            draw_overview(
-                &mut commands,
-                center,
-                &assets,
-                &maps,
-                &current.name,
-                &cursor,
-            );
-        }
+        draw_level(
+            &mut commands,
+            center,
+            &assets,
+            &maps,
+            &current.name,
+            &cursor,
+        );
     } else if moved {
-        // Just slide the selection outline — no need to redraw the thumbnails.
+        // Full-world view: just slide the selection outline — no redraw needed.
         if let Ok(mut transform) = highlight.single_mut() {
             let pos = cell_center(center, cursor.gx, cursor.gy, cols, rows);
             transform.translation.x = pos.x;
@@ -198,6 +242,95 @@ fn navigate_map(
 }
 
 // --- drawing -------------------------------------------------------------
+
+/// Draw whichever zoom level the cursor is currently on.
+fn draw_level(
+    commands: &mut Commands,
+    center: Vec2,
+    assets: &GameAssets,
+    maps: &Assets<MapData>,
+    current_name: &str,
+    cursor: &MapCursor,
+) {
+    match cursor.zoom {
+        Zoom::World => draw_overview(commands, center, assets, maps, current_name, cursor),
+        Zoom::Window => draw_window(commands, center, assets, maps, current_name, cursor),
+        Zoom::Room => draw_zoom(commands, center, assets, maps, cursor),
+    }
+}
+
+/// The default view: a fixed `VIEW_COLS×VIEW_ROWS` window of rooms that scrolls to
+/// follow the selection, so individual rooms stay readable however many exist.
+fn draw_window(
+    commands: &mut Commands,
+    center: Vec2,
+    assets: &GameAssets,
+    maps: &Assets<MapData>,
+    current_name: &str,
+    cursor: &MapCursor,
+) {
+    backdrop(commands, center);
+    label(
+        commands,
+        center,
+        Vec2::new(0.0, GRID_H / 2.0 + 36.0),
+        30.0,
+        "WORLD MAP",
+    );
+    label(
+        commands,
+        center,
+        Vec2::new(0.0, -GRID_H / 2.0 - 34.0),
+        17.0,
+        "[M] close    move: arrows / d-pad    [jump] zoom in    [X] zoom out",
+    );
+
+    let (cols, rows) = grid_dims(&assets.room_names);
+    let win = window_origin((cursor.gx, cursor.gy), cols, rows);
+    let cell = Vec2::new(GRID_W / VIEW_COLS as f32, GRID_H / VIEW_ROWS as f32);
+
+    // Gold ring on the room you're actually in (when on screen), then the white
+    // selection ring.
+    if let Some((gx, gy)) = parse_pos(current_name)
+        && in_window((gx, gy), win)
+    {
+        ring(
+            commands,
+            window_cell_center(center, gx, gy, win),
+            cell * 0.97,
+            90.4,
+            Color::srgb(0.95, 0.78, 0.25),
+            false,
+        );
+    }
+    ring(
+        commands,
+        window_cell_center(center, cursor.gx, cursor.gy, win),
+        cell * 0.9,
+        90.6,
+        Color::WHITE,
+        true,
+    );
+
+    for sr in 0..VIEW_ROWS {
+        for sc in 0..VIEW_COLS {
+            let (gx, gy) = (win.0 + sc, win.1 + sr);
+            let name = name_at(gx, gy);
+            let Some(map) = room_data(assets, maps, &name) else {
+                continue;
+            };
+            let pos = window_cell_center(center, gx, gy, win);
+            draw_room(commands, pos, cell * 0.82, map, 91.0);
+            room_label(
+                commands,
+                center,
+                pos - center + Vec2::new(0.0, -cell.y * 0.36),
+                14.0,
+                map.display_name(&name),
+            );
+        }
+    }
+}
 
 fn draw_overview(
     commands: &mut Commands,
@@ -220,7 +353,7 @@ fn draw_overview(
         center,
         Vec2::new(0.0, -GRID_H / 2.0 - 34.0),
         17.0,
-        "[M] close    move: arrows / d-pad    [jump] zoom",
+        "[M] close    move: arrows / d-pad    [jump] zoom in",
     );
 
     let (cols, rows) = grid_dims(&assets.room_names);
@@ -292,7 +425,7 @@ fn draw_zoom(
         center,
         Vec2::new(0.0, -216.0),
         17.0,
-        "[jump] back to map    [M] close",
+        "[X] zoom out    move: arrows    [M] close",
     );
 }
 
@@ -449,6 +582,34 @@ fn cell_center(center: Vec2, gx: i32, gy: i32, cols: i32, rows: i32) -> Vec2 {
         center.x - GRID_W / 2.0 + cell.x * (gx as f32 + 0.5),
         center.y - GRID_H / 2.0 + cell.y * (gy as f32 + 0.5),
     )
+}
+
+/// Top-left grid cell of the scrolling `Window` view, clamped so it never scrolls
+/// past the rooms (and stays put when everything already fits on screen).
+fn window_origin((gx, gy): (i32, i32), cols: i32, rows: i32) -> (i32, i32) {
+    (
+        (gx - VIEW_COLS / 2).clamp(0, (cols - VIEW_COLS).max(0)),
+        (gy - VIEW_ROWS / 2).clamp(0, (rows - VIEW_ROWS).max(0)),
+    )
+}
+
+/// Whether a grid cell falls inside the window starting at `win`.
+fn in_window((gx, gy): (i32, i32), win: (i32, i32)) -> bool {
+    (win.0..win.0 + VIEW_COLS).contains(&gx) && (win.1..win.1 + VIEW_ROWS).contains(&gy)
+}
+
+/// Screen position of a grid cell in the `Window` view, given the window origin.
+fn window_cell_center(center: Vec2, gx: i32, gy: i32, win: (i32, i32)) -> Vec2 {
+    let cell = Vec2::new(GRID_W / VIEW_COLS as f32, GRID_H / VIEW_ROWS as f32);
+    Vec2::new(
+        center.x - GRID_W / 2.0 + cell.x * ((gx - win.0) as f32 + 0.5),
+        center.y - GRID_H / 2.0 + cell.y * ((gy - win.1) as f32 + 0.5),
+    )
+}
+
+/// The room file key for a grid position (`r{col}_{row}`).
+fn name_at(gx: i32, gy: i32) -> String {
+    format!("r{gx}_{gy}")
 }
 
 /// True if any of `codes` was just pressed, or the gamepad `button` was.

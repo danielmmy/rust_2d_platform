@@ -33,10 +33,16 @@ Jump is **hold-to-go-higher**, with **coyote time** (jump just after a ledge) an
 **walk off an edge** (through a side corridor, or up/down the central shaft) and
 the neighbouring room scrolls in. Each room has its own background colour.
 
-Press **`M`** (or **`Start`**) to open the **world map**: a paused overview of all
-your rooms glued together in a grid (it grows as you add rooms), with the room
-you're in highlighted.
-Move the selection and press **jump** to zoom a room to full detail.
+Press **`M`** (or **`Start`**) to open the **world map**, which has **three zoom
+levels** — press **jump** to zoom in and **`X`** (gamepad **`B`**) to zoom out:
+
+- **Window** (default) — a scrollable 4×3 window of rooms, so each stays readable
+  no matter how many you add; it scrolls to follow your selection.
+- **World** — the whole map at once (every room glued together, shrunk to fit) for
+  an overview.
+- **Room** — one room blown up to full detail; arrows step to its neighbours.
+
+The room you're in stays highlighted throughout.
 
 ## What makes the jump feel nice
 
@@ -161,6 +167,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — World map: now has three zoom levels — a scrollable 4×3
+  **Window** of rooms (the new default, so the map no longer shrinks to fit as
+  rooms are added), the full-**World** overview, and the single-**Room** detail
+  view. Jump zooms in; `X` (gamepad `B`) zooms out.
 - **2026-06-25** — World map: room-name labels are now light grey backed by a
   darker-grey silhouette (an outline of offset copies) instead of plain white, so
   they stay legible over bright room thumbnails.
