@@ -21,7 +21,7 @@ use bevy::prelude::*;
 
 use crate::menu::Paused;
 use crate::state::GameState;
-use crate::world::{BENCH_GLYPH, CurrentRoom, GameAssets, MapData, START_MARKER};
+use crate::world::{BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, GameAssets, MapData, START_MARKER};
 
 /// Whether the world map overlay is showing. Gameplay runs only when `Closed`.
 #[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
@@ -661,6 +661,8 @@ fn tile_color(ch: char, map: &MapData) -> Option<Color> {
         Some(Color::srgb(0.4, 0.9, 0.5))
     } else if ch == BENCH_GLYPH {
         Some(Color::srgb(0.85, 0.62, 0.32))
+    } else if ch == ENEMY_GLYPH {
+        Some(Color::srgb(0.8, 0.4, 0.7))
     } else if map.solid.contains(ch) {
         Some(Color::srgb(0.78, 0.82, 0.9))
     } else if map.spikes.contains(ch) {

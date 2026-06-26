@@ -21,6 +21,12 @@ impl Solids {
     fn is_solid(&self, col: i32, row: i32) -> bool {
         self.0.contains(&(col, row))
     }
+
+    /// Whether the tile containing world point `(x, y)` is solid (used by enemy AI
+    /// for ledge detection).
+    pub(crate) fn solid_at(&self, x: f32, y: f32) -> bool {
+        self.is_solid(to_tile(x), to_tile(y))
+    }
 }
 
 fn to_tile(p: f32) -> i32 {

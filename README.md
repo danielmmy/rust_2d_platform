@@ -20,6 +20,7 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | --- | --- | --- |
 | Move | `A`/`D` or `←`/`→` | left stick / D-pad |
 | Jump / confirm | `Space`, `W`, `↑`, `Z`, or `Enter` | `A` (south) |
+| Attack (sword) | `J` | `X` (west) |
 | Interact (rest at bench) | `E` | `Y` (north) |
 | World map | `M` | `Start` |
 | Pause | `Esc` | `Select` |
@@ -69,14 +70,22 @@ The world is a 4×3 grid of tall rooms (each larger than the screen, so the
 with zig-zag ledges gives the climbing; **ceiling/floor gaps** are the up/down
 doors and **side corridors** are the left/right doors. Hazards are sparse and
 avoidable: **ground spikes** in dead-end corners and **falling rocks** in the
-open. Touching one costs a **heart** (with brief invulnerability) and bounces you
-to the room's entrance; lose all three hearts and you respawn at the last bench.
+open. Touching one (or an enemy) costs a **heart** (with brief invulnerability) and
+bounces you to the room's entrance; lose all three hearts and you respawn at the
+last bench.
+
+**Enemies** (`E` glyph) patrol the ground, turning at walls and ledges, and hurt
+you on contact. Swing your **sword** with **`J`** (gamepad `X`): a hitbox in front
+of the way you're facing, and presses chain a **3-hit combo** (the finisher flashes
+gold). A killed enemy drops an **energy orb** — walk over it to bank **energy**
+(counted on the HUD). Enemies respawn when the room reloads (re-entering it, or
+resting at a bench).
 
 **Benches** are checkpoints — the start room has one. Stand on a bench and press
 **`E`** (gamepad **`Y`**) — a **`[E] rest`** prompt appears — to **save** your game,
-**refill** your hearts, and **reset** the room's enemies; the bench you last rested
-at is where death returns you. (Just walking over a bench does nothing.) Benches
-show on the world map as warm cells.
+**refill** your hearts, and **respawn the room's enemies**; the bench you last
+rested at is where death returns you. (Just walking over a bench does nothing.)
+Benches show on the world map as warm cells.
 
 Besides the edge doors, rooms can be wired together with **teleporters** — pads
 that link two distant rooms (or two spots in the same room) directly. Each pad
@@ -98,6 +107,7 @@ The structure is plugin-per-concern:
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
 | [`health`](src/health.rs) | Hearts, i-frames, the heart HUD, death → last bench. |
+| [`combat`](src/combat.rs) | Patrolling enemies, energy drops/pickup, the 3-hit sword combo. |
 | [`save`](src/save.rs) | Three-slot save system (room + bench), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
@@ -210,8 +220,9 @@ losing all hearts.
 ### Replace the art
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
-(`tile.png`, `spikes.png`, `rock.png`). Sizes are set in code via `custom_size`, so
-any resolution works — the world keeps the same scale.
+(`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `orb.png`, `slash.png`). Sizes
+are set in code via `custom_size`, so any resolution works — the world keeps the
+same scale.
 
 **`player.png`, `portal.png`, and `bench.png` are sprite sheets** — each an N×M
 grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
@@ -241,6 +252,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Added **combat**: patrolling **enemies** (`E` glyph; turn at
+  walls/ledges, hurt on contact), a **sword** (`J`) with a **3-hit combo**, and
+  **energy** orbs that enemies drop and the player banks (HUD counter). Enemies
+  respawn when the room reloads — including resting at a bench, which now reloads
+  the room.
 - **2026-06-26** — Added a **Main Menu** option to the pause menu, and **New Game**
   now lets you **type a name** for the save (shown in the slot picker).
 - **2026-06-26** — New Game now **confirms before overwriting** an occupied save

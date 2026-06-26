@@ -17,7 +17,8 @@ use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 
 use crate::GameSet;
-use crate::hazards::{Hazard, RespawnPoint, Rock, RockSpawner, RockSprite, SPIKE_HALF};
+use crate::combat::{ENEMY_HALF, Enemy};
+use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
 use crate::input::PlayerIntent;
 use crate::physics::{Solids, TILE};
@@ -266,6 +267,8 @@ impl Default for TeleportArmed {
     }
 }
 
+/// Grid glyph marking a patrolling enemy spawn.
+pub(crate) const ENEMY_GLYPH: char = 'E';
 /// Grid glyph marking a bench: a checkpoint that saves the game, refills hearts,
 /// resets enemies, and becomes the player's respawn point.
 pub(crate) const BENCH_GLYPH: char = 'B';
@@ -312,6 +315,9 @@ pub(crate) struct GameAssets {
     pub(crate) spikes: Handle<Image>,
     pub(crate) portal: Handle<Image>,
     pub(crate) bench: Handle<Image>,
+    pub(crate) enemy: Handle<Image>,
+    pub(crate) orb: Handle<Image>,
+    pub(crate) slash: Handle<Image>,
 }
 
 /// The room the player is currently in: its name, neighbours and pixel size.
@@ -435,6 +441,9 @@ fn load_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
         spikes: asset_server.load("sprites/spikes.png"),
         portal: asset_server.load("sprites/portal.png"),
         bench: asset_server.load("sprites/bench.png"),
+        enemy: asset_server.load("sprites/enemy.png"),
+        orb: asset_server.load("sprites/orb.png"),
+        slash: asset_server.load("sprites/slash.png"),
     });
     commands.insert_resource(RockSprite(asset_server.load("sprites/rock.png")));
 }
@@ -454,6 +463,9 @@ fn wait_for_load(
         && asset_server.is_loaded_with_dependencies(assets.spikes.id())
         && asset_server.is_loaded_with_dependencies(assets.portal.id())
         && asset_server.is_loaded_with_dependencies(assets.bench.id())
+        && asset_server.is_loaded_with_dependencies(assets.enemy.id())
+        && asset_server.is_loaded_with_dependencies(assets.orb.id())
+        && asset_server.is_loaded_with_dependencies(assets.slash.id())
         && asset_server.is_loaded_with_dependencies(rock.0.id());
 
     if maps_ready && sprites_ready {
@@ -592,6 +604,18 @@ fn handle_load_map(
 
             if ch == START_MARKER {
                 start_pos = center;
+            } else if ch == ENEMY_GLYPH {
+                commands.spawn((
+                    MapEntity,
+                    Enemy::new(),
+                    Hazard { half: ENEMY_HALF },
+                    Sprite {
+                        image: assets.enemy.clone(),
+                        custom_size: Some(Vec2::splat(TILE)),
+                        ..default()
+                    },
+                    Transform::from_xyz(center.x, center.y, 2.0),
+                ));
             } else if ch == BENCH_GLYPH {
                 commands.spawn((
                     MapEntity,
@@ -796,19 +820,18 @@ fn detect_teleport(
 }
 
 /// Show a prompt above a bench the player is standing on, and — when they press
-/// **interact** there — rest: refill hearts, clear in-flight enemies, and record
+/// **interact** there — rest: refill hearts, respawn the room's enemies, and record
 /// the bench as the save + respawn point (persisted to disk).
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn bench_interact(
-    mut commands: Commands,
     intent: Res<PlayerIntent>,
     mut save: ResMut<Save>,
     mut health: ResMut<Health>,
     current: Res<CurrentRoom>,
     benches: Query<(&Transform, &Bench), Without<BenchPrompt>>,
-    rocks: Query<Entity, With<Rock>>,
     player: Query<&Transform, (With<Player>, Without<BenchPrompt>)>,
     mut prompt: Query<(&mut Transform, &mut Visibility), With<BenchPrompt>>,
+    mut load: MessageWriter<LoadMap>,
 ) {
     let Ok(player_tf) = player.single() else {
         return;
@@ -843,9 +866,12 @@ fn bench_interact(
         save.bench_col = bench.col;
         save.bench_row = bench.row;
         save::write_save(&save);
-        for entity in &rocks {
-            commands.entity(entity).despawn();
-        }
+        // Reload the room so enemies (and other hazards) respawn fresh, placing the
+        // player back on this bench.
+        load.write(LoadMap {
+            map: current.name.clone(),
+            entry: Entry::Bench(bench.col, bench.row),
+        });
     }
 }
 

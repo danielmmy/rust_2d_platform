@@ -8,6 +8,7 @@
 
 mod anim;
 mod camera;
+mod combat;
 #[cfg(debug_assertions)]
 mod editor;
 mod hazards;
@@ -81,6 +82,7 @@ fn main() {
         player::PlayerPlugin,
         hazards::HazardPlugin,
         health::HealthPlugin,
+        combat::CombatPlugin,
         anim::AnimationPlugin,
         camera::CameraPlugin,
         worldmap::WorldMapPlugin,

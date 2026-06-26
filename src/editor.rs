@@ -23,7 +23,7 @@ use crate::hazards::RockSprite;
 use crate::menu::Paused;
 use crate::state::GameState;
 use crate::world::{
-    BENCH_GLYPH, CurrentRoom, GameAssets, MapData, START_MARKER, Teleport, map_fs_path,
+    BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, GameAssets, MapData, START_MARKER, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -32,11 +32,12 @@ use crate::worldmap::MapView;
 const PORTAL_BRUSH: char = 'P';
 
 /// The paint brushes, by the grid character they write.
-const BRUSHES: [(char, &str); 7] = [
+const BRUSHES: [(char, &str); 8] = [
     ('#', "Wall"),
     ('^', "Spike"),
     ('R', "Rock"),
     (START_MARKER, "Start"),
+    (ENEMY_GLYPH, "Enemy"),
     (BENCH_GLYPH, "Bench"),
     (PORTAL_BRUSH, "Portal"),
     ('.', "Erase"),
@@ -1277,6 +1278,7 @@ fn sprite_for(ch: char, assets: &GameAssets, rock: &RockSprite) -> Option<Handle
         '^' => Some(assets.spikes.clone()),
         'R' => Some(rock.0.clone()),
         c if c == START_MARKER => Some(assets.player.clone()),
+        c if c == ENEMY_GLYPH => Some(assets.enemy.clone()),
         _ => None,
     }
 }
