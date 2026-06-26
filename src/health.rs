@@ -13,7 +13,7 @@ use crate::hazards::RespawnPoint;
 use crate::player::{Player, Velocity};
 use crate::save::Save;
 use crate::state::GameState;
-use crate::world::{Entry, LoadMap, START_MAP};
+use crate::world::{Entry, LoadMap, START_MAP, TeleportArmed};
 
 /// The player's hearts.
 #[derive(Resource)]
@@ -70,10 +70,12 @@ fn tick_invuln(time: Res<Time>, mut invuln: ResMut<Invuln>) {
     invuln.0 = (invuln.0 - time.delta_secs()).max(0.0);
 }
 
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn apply_damage(
     mut hurts: MessageReader<Hurt>,
     mut health: ResMut<Health>,
     mut invuln: ResMut<Invuln>,
+    mut armed: ResMut<TeleportArmed>,
     save: Res<Save>,
     respawn: Res<RespawnPoint>,
     mut load: MessageWriter<LoadMap>,
@@ -87,6 +89,9 @@ fn apply_damage(
 
     health.current -= 1;
     invuln.0 = IFRAMES;
+    // Disarm teleporters: the room-entry respawn can be a portal pad, and we don't
+    // want landing back on it to immediately teleport the player away again.
+    armed.0 = false;
 
     if health.current > 0 {
         // Non-fatal: bounce back to where the player entered this room.

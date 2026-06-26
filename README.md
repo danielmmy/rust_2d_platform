@@ -240,6 +240,9 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Fixed a teleport loop: taking damage after using a portal could
+  respawn the player onto the destination pad and immediately fire it back to the
+  origin. Damage now disarms teleporters until the player steps clear.
 - **2026-06-25** — Redrew the sprites with **side-on** orientation and smoother,
   more-frame animations: the player is a side-profile character (faces the walk
   direction) with idle/**walk**/jump/damage; the portal is an upright vortex; and

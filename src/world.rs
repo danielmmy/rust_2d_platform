@@ -254,11 +254,11 @@ pub(crate) struct Teleporter {
     dest: (i32, i32),
 }
 
-/// Whether teleporters are ready to fire. Disarmed on each teleport (and on every
-/// room load), and only re-armed once the player is [`TELEPORT_REARM`] from every
-/// pad — so a pad can't chain rapid teleports or fire on the one you arrive on.
+/// Whether teleporters are ready to fire. Disarmed on each teleport, on every room
+/// load, and when the player respawns from damage (so respawning onto a pad can't
+/// chain), and only re-armed once the player is [`TELEPORT_REARM`] from every pad.
 #[derive(Resource)]
-struct TeleportArmed(bool);
+pub(crate) struct TeleportArmed(pub(crate) bool);
 
 impl Default for TeleportArmed {
     fn default() -> Self {
