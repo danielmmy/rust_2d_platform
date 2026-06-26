@@ -33,10 +33,12 @@ During play, **`Esc`** (or `Select`) brings up a **pause menu** (Continue / **Ma
 Menu** / Quit). Menus are navigated with up/down and confirmed with jump / `Enter`.
 In **debug builds** both menus gain a **Level Builder** entry (see below).
 
-You have **three hearts** (shown top-left). Spikes, falling rocks, and falling into
-a pit each cost a heart, with brief invulnerability after a hit; a non-fatal hit
-returns you to the room's entrance. **Lose all hearts and you respawn at the last
-bench** you rested at, hearts refilled.
+Your **health** is a **bar** at the top-left that's **green when full and shades
+through yellow to red** as it drops (a continuous bar, so it reads cleanly however
+high Vitality pushes your max). You start with three points. Spikes, falling rocks,
+and falling into a pit each cost a point, with brief invulnerability after a hit; a
+non-fatal hit returns you to the room's entrance. **Lose all your health and you
+respawn at the last bench** you rested at, fully restored.
 
 Jump is **hold-to-go-higher**, with **coyote time** (jump just after a ledge) and
 **jump buffering** (press just before landing). Rooms connect like Hollow Knight:
@@ -133,7 +135,7 @@ The structure is plugin-per-concern:
 | [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
-| [`health`](src/health.rs) | Hearts (sized by Vitality), i-frames, the heart HUD, death → bloodstain + last bench. |
+| [`health`](src/health.rs) | Health (sized by Vitality), i-frames, the colour-graded health-bar HUD, death → bloodstain + last bench. |
 | [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, bloodstain recovery, the 3-hit sword combo. |
 | [`stats`](src/stats.rs) | Character stats (Vitality/Strength/Poise), the upgrade shop, and the character screen. |
 | [`save`](src/save.rs) | Three-slot save system (room + bench + progression), RON files under `saves/`. |
@@ -290,6 +292,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Replaced the row of heart pips with a single **continuous health
+  bar** whose fill **shades green → yellow → red** as health drops (hue mapped to the
+  fraction). It scales cleanly with the higher maximums Vitality unlocks, where a
+  growing row of icons didn't.
 - **2026-06-26** — Moved the **shop to benches**. Interacting with a bench (`E`) now
   opens a **bench menu** — **Rest** (save / restore / respawn), **Upgrade** a stat with
   energy, or **Leave** — instead of resting immediately. The `C` character screen is

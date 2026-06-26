@@ -1,10 +1,11 @@
-//! Hearts, damage, invulnerability frames, the heart HUD, and death → last bench.
+//! Health, damage, invulnerability frames, the health-bar HUD, and death → last bench.
 //!
-//! The player has [`Health`] (three hearts by default). Hazards and pits write a
-//! [`Hurt`] message; [`apply_damage`] spends a heart, grants brief i-frames, and
-//! either respawns at the room entrance (a non-fatal hit) or — on the last heart —
-//! refills and sends the player to the last bench they rested at (see
-//! [`crate::save`]). The HUD is a row of heart sprites pinned to the viewport.
+//! The player has [`Health`] (three points by default; Vitality raises the max).
+//! Hazards and pits write a [`Hurt`] message; [`apply_damage`] spends a point, grants
+//! brief i-frames, and either respawns at the room entrance (a non-fatal hit) or — on
+//! the last point — refills and sends the player to the last bench they rested at (see
+//! [`crate::save`]). The HUD is a single continuous bar pinned to the viewport, its
+//! fill width and colour (green → red) tracking the health fraction.
 
 use bevy::prelude::*;
 
@@ -55,18 +56,22 @@ pub(crate) enum Hurt {
     Pit,
 }
 
-/// One heart in the HUD, by index from the left.
+/// The dark backing of the health bar (shows through where health is missing).
 #[derive(Component)]
-struct HeartIcon(i32);
+struct HealthBarBg;
+/// The coloured fill of the health bar; its width tracks the health fraction and its
+/// hue slides green → red as that fraction drops.
+#[derive(Component)]
+struct HealthBarFill;
 
-// Heart HUD layout, in viewport pixels (scaled with the camera so it stays put).
+// Health-bar layout, in viewport pixels (scaled with the camera so it stays put). A
+// single continuous bar (rather than discrete pips) reads cleanly however high
+// Vitality pushes the max — health is always shown as a fraction of the same bar.
 const VIEW_HALF: Vec2 = Vec2::new(480.0, 270.0);
-const HEART_SIZE: f32 = 24.0;
-const HEART_FULL: Color = Color::srgb(0.9, 0.2, 0.3);
-const HEART_EMPTY: Color = Color::srgb(0.28, 0.12, 0.14);
-/// How many heart icons to spawn. Vitality can grow `max` up to this, so we make
-/// the row big enough and just hide the icons beyond the current `max`.
-const HEART_CAP: i32 = 12;
+const BAR_SIZE: Vec2 = Vec2::new(180.0, 16.0);
+/// Offset of the bar's left-centre from the viewport's top-left corner.
+const BAR_INSET: Vec2 = Vec2::new(20.0, 24.0);
+const BAR_BG: Color = Color::srgb(0.12, 0.12, 0.16);
 
 pub struct HealthPlugin;
 
@@ -173,39 +178,50 @@ fn apply_damage(
     }
 }
 
-fn spawn_hud(mut commands: Commands, existing: Query<(), With<HeartIcon>>) {
+fn spawn_hud(mut commands: Commands, existing: Query<(), With<HealthBarBg>>) {
     if !existing.is_empty() {
         return;
     }
-    // Spawn the full cap; `update_hud` hides the ones past the current `max`.
-    for i in 0..HEART_CAP {
-        commands.spawn((
-            HeartIcon(i),
-            Sprite {
-                color: HEART_FULL,
-                custom_size: Some(Vec2::splat(HEART_SIZE)),
-                ..default()
-            },
-            Transform::from_xyz(0.0, 0.0, 50.0),
-        ));
-    }
+    commands.spawn((
+        HealthBarBg,
+        Sprite {
+            color: BAR_BG,
+            custom_size: Some(BAR_SIZE),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, 50.0),
+    ));
+    commands.spawn((
+        HealthBarFill,
+        Sprite {
+            custom_size: Some(BAR_SIZE),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, 51.0),
+    ));
 }
 
-fn despawn_hud(mut commands: Commands, hearts: Query<Entity, With<HeartIcon>>) {
-    for entity in &hearts {
+#[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
+fn despawn_hud(
+    mut commands: Commands,
+    bars: Query<Entity, Or<(With<HealthBarBg>, With<HealthBarFill>)>>,
+) {
+    for entity in &bars {
         commands.entity(entity).despawn();
     }
 }
 
-/// Pin the hearts to the top-left of the viewport (scaled with the camera zoom so
-/// they keep a constant on-screen size) and colour them by current health.
+/// Pin the health bar to the top-left of the viewport (scaled with the camera zoom so
+/// it keeps a constant on-screen size). The fill's width is the health fraction and
+/// its colour slides from green (full) through yellow to red (low).
 #[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
 fn update_hud(
     health: Res<Health>,
     camera: Query<(&Transform, &Projection), With<Camera2d>>,
-    mut hearts: Query<
-        (&HeartIcon, &mut Transform, &mut Sprite, &mut Visibility),
-        Without<Camera2d>,
+    mut bg: Query<&mut Transform, (With<HealthBarBg>, Without<Camera2d>)>,
+    mut fill: Query<
+        (&mut Transform, &mut Sprite),
+        (With<HealthBarFill>, Without<HealthBarBg>, Without<Camera2d>),
     >,
 ) {
     let Ok((camera_tf, projection)) = camera.single() else {
@@ -216,22 +232,29 @@ fn update_hud(
         _ => 1.0,
     };
     let top_left = camera_tf.translation.truncate() + Vec2::new(-VIEW_HALF.x, VIEW_HALF.y) * scale;
+    // The bar's left-centre, in world space.
+    let left = top_left + Vec2::new(BAR_INSET.x, -BAR_INSET.y) * scale;
 
-    for (icon, mut transform, mut sprite, mut visibility) in &mut hearts {
-        // Icons past the current max (Vitality can raise it) stay hidden.
-        if icon.0 >= health.max {
-            *visibility = Visibility::Hidden;
-            continue;
-        }
-        *visibility = Visibility::Visible;
-        let pos = top_left + Vec2::new(28.0 + icon.0 as f32 * 32.0, -28.0) * scale;
-        transform.translation.x = pos.x;
-        transform.translation.y = pos.y;
-        transform.scale = Vec3::splat(scale);
-        sprite.color = if icon.0 < health.current {
-            HEART_FULL
+    // Sprites are centre-anchored, so a sprite of (world) width `w` whose left edge
+    // sits at `left.x` has its centre at `left.x + w/2`.
+    if let Ok(mut bg_tf) = bg.single_mut() {
+        bg_tf.translation.x = left.x + BAR_SIZE.x * 0.5 * scale;
+        bg_tf.translation.y = left.y;
+        bg_tf.scale = Vec3::splat(scale);
+    }
+
+    if let Ok((mut fill_tf, mut sprite)) = fill.single_mut() {
+        let frac = if health.max > 0 {
+            (health.current as f32 / health.max as f32).clamp(0.0, 1.0)
         } else {
-            HEART_EMPTY
+            0.0
         };
+        let width = BAR_SIZE.x * frac;
+        sprite.custom_size = Some(Vec2::new(width, BAR_SIZE.y));
+        // Hue 120° (green) at full health → 0° (red) when empty.
+        sprite.color = Color::hsl(120.0 * frac, 0.85, 0.5);
+        fill_tf.translation.x = left.x + width * 0.5 * scale;
+        fill_tf.translation.y = left.y;
+        fill_tf.scale = Vec3::splat(scale);
     }
 }
