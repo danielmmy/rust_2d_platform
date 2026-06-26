@@ -28,6 +28,8 @@ use crate::world::{GameAssets, MapEntity};
 pub(crate) const ENEMY_HALF: Vec2 = Vec2::new(10.0, 13.0);
 const ENEMY_GRAVITY: f32 = 1400.0;
 const ENEMY_MAX_FALL: f32 = 800.0;
+/// A drifting flyer's vertical bob speed, as a fraction of its horizontal speed.
+const FLY_BOB_RATIO: f32 = 0.6;
 
 /// How an enemy decides where to move.
 #[derive(Clone, Copy)]
@@ -44,6 +46,20 @@ pub(crate) enum EnemyAi {
         jump: f32,
         cooldown: f32,
     },
+    /// Flies (no gravity): cruises horizontally and bobs vertically, bouncing
+    /// off any solid it meets.
+    Drift,
+    /// Flies (no gravity): homes straight in on the player while within `aggro`;
+    /// otherwise drifts like [`Drift`](EnemyAi::Drift).
+    Hunt { aggro: f32 },
+}
+
+impl EnemyAi {
+    /// Whether this behaviour moves freely through the air (ignoring gravity and
+    /// ground/ledge handling).
+    fn flies(self) -> bool {
+        matches!(self, EnemyAi::Drift | EnemyAi::Hunt { .. })
+    }
 }
 
 /// A fully data-driven enemy type: stats, behaviour ([`ai`](EnemyKind::ai)), and
@@ -63,7 +79,7 @@ pub(crate) struct EnemyKind {
 
 /// The enemy types, indexed by the `kind` in a map's `enemies` array. Index 0 is
 /// the default when an `E` glyph has no matching entry.
-pub(crate) const ENEMY_KINDS: [EnemyKind; 4] = [
+pub(crate) const ENEMY_KINDS: [EnemyKind; 6] = [
     // Basic: ambling purple patroller.
     EnemyKind {
         health: 3,
@@ -137,6 +153,38 @@ pub(crate) const ENEMY_KINDS: [EnemyKind; 4] = [
             playback: Playback::Loop,
         },
     },
+    // Cyan flutterer: drifts around the room, bouncing off walls and floors.
+    EnemyKind {
+        health: 2,
+        color: Color::srgb(0.40, 0.80, 0.86),
+        speed: 70.0,
+        ai: EnemyAi::Drift,
+        sheet: "flyer.png",
+        cols: 2,
+        rows: 1,
+        clip: Clip {
+            first: 0,
+            count: 2,
+            fps: 9.0,
+            playback: Playback::Loop,
+        },
+    },
+    // Magenta stalker: flies straight at the player once they're in range.
+    EnemyKind {
+        health: 2,
+        color: Color::srgb(0.88, 0.36, 0.74),
+        speed: 96.0,
+        ai: EnemyAi::Hunt { aggro: 220.0 },
+        sheet: "flyer.png",
+        cols: 2,
+        rows: 1,
+        clip: Clip {
+            first: 0,
+            count: 2,
+            fps: 12.0,
+            playback: Playback::Loop,
+        },
+    },
 ];
 
 /// A spawned enemy: its [`kind`](Enemy::kind) (indexing [`ENEMY_KINDS`]), remaining
@@ -152,14 +200,20 @@ pub(crate) struct Enemy {
 }
 
 impl Enemy {
-    /// A fresh enemy of `kind`, walking right.
+    /// A fresh enemy of `kind`, walking right. Flyers start with an upward drift
+    /// velocity so they bob immediately; grounded kinds begin at rest.
     pub(crate) fn new(kind: usize) -> Self {
         let kind = kind.min(ENEMY_KINDS.len() - 1);
+        let spec = &ENEMY_KINDS[kind];
         Self {
             kind,
-            health: ENEMY_KINDS[kind].health,
+            health: spec.health,
             dir: 1.0,
-            vy: 0.0,
+            vy: if spec.ai.flies() {
+                spec.speed * FLY_BOB_RATIO
+            } else {
+                0.0
+            },
             jump_cd: 0.0,
         }
     }
@@ -182,6 +236,43 @@ fn enemy_ai(
     for (mut transform, mut enemy, mut sprite) in &mut enemies {
         let kind = &ENEMY_KINDS[enemy.kind];
         let mut center = transform.translation.truncate();
+
+        // --- Flying enemies: free aerial movement, no gravity. ---
+        if kind.ai.flies() {
+            // Aerial chasers home straight in on the player while in range.
+            let hunting = match kind.ai {
+                EnemyAi::Hunt { aggro } => player_pos.is_some_and(|pp| center.distance(pp) < aggro),
+                _ => false,
+            };
+            if hunting {
+                let to = (player_pos.unwrap() - center).normalize_or_zero();
+                physics::collide_x(&solids, &mut center, ENEMY_HALF, to.x * kind.speed * dt);
+                physics::collide_y(&solids, &mut center, ENEMY_HALF, to.y * kind.speed * dt);
+                if to.x != 0.0 {
+                    enemy.dir = to.x.signum();
+                }
+            } else {
+                // Drift: cruise horizontally and bob vertically, reversing on contact.
+                if physics::collide_x(
+                    &solids,
+                    &mut center,
+                    ENEMY_HALF,
+                    enemy.dir * kind.speed * dt,
+                ) {
+                    enemy.dir = -enemy.dir;
+                }
+                let (vblocked, _) =
+                    physics::collide_y(&solids, &mut center, ENEMY_HALF, enemy.vy * dt);
+                if vblocked {
+                    enemy.vy = -enemy.vy;
+                }
+            }
+            transform.translation.x = center.x;
+            transform.translation.y = center.y;
+            sprite.flip_x = enemy.dir < 0.0;
+            continue;
+        }
+
         let grounded = solids.solid_at(center.x, center.y - ENEMY_HALF.y - 2.0);
         enemy.jump_cd = (enemy.jump_cd - dt).max(0.0);
 
@@ -189,7 +280,8 @@ fn enemy_ai(
         let engaged = |enemy: &mut Enemy| -> bool {
             let aggro = match kind.ai {
                 EnemyAi::Chase { aggro } | EnemyAi::Pounce { aggro, .. } => aggro,
-                EnemyAi::Patrol => return false,
+                // Flying kinds are handled above and never reach this closure.
+                EnemyAi::Patrol | EnemyAi::Drift | EnemyAi::Hunt { .. } => return false,
             };
             match player_pos {
                 Some(pp) if center.distance(pp) < aggro => {
@@ -242,6 +334,8 @@ fn enemy_ai(
                     step = 0.0;
                 }
             }
+            // Flying kinds are handled by the early `continue` above.
+            EnemyAi::Drift | EnemyAi::Hunt { .. } => {}
         }
 
         physics::collide_x(&solids, &mut center, ENEMY_HALF, step);

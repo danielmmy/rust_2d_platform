@@ -234,10 +234,11 @@ losing all hearts.
 ### Replace the art
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
-(`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `orb.png`,
-`slash.png`). Sizes are set in code via `custom_size`, so any resolution works — the
-world keeps the same scale. The enemy sheets (`enemy.png` walkers, `jumper.png`
-leapers) are **near-white** so each kind tints them to its colour.
+(`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `flyer.png`,
+`orb.png`, `slash.png`). Sizes are set in code via `custom_size`, so any resolution
+works — the world keeps the same scale. The enemy sheets (`enemy.png` walkers,
+`jumper.png` leapers, `flyer.png` winged flyers) are **near-white** so each kind tints
+them to its colour.
 
 **`player.png`, `portal.png`, and `bench.png` are sprite sheets** — each an N×M
 grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
@@ -267,6 +268,12 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — New **flying** enemy (`flyer.png`, a winged flapper) that ignores
+  gravity, in two tinted variants: a cyan **drifter** (`Drift`) that cruises and bobs,
+  bouncing off walls and floors, and a magenta **stalker** (`Hunt`) that homes straight
+  in on the player once within aggro range and drifts otherwise. Place them on any `E`
+  cell — including mid-air ones — since they don't fall; two patrol the starting room's
+  upper space.
 - **2026-06-26** — New **leaper** enemy (`jumper.png`, a crouch→stretch hopper) with a
   `Pounce` AI: it ambles until you're in aggro range, then leaps toward your head, and
   **waits out a cooldown after each jump** so it can't spam pounces (it only travels
