@@ -8,6 +8,7 @@
     east: "r1_0",
     west: "",
     teleports: [
+        (origin_col: 16, origin_row: 20, to: "r0_1", dest_col: 7, dest_row: 17),
     ],
     bg: [0.32, 0.16, 0.16],
     tiles: [

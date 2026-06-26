@@ -249,7 +249,7 @@ pub(crate) struct MapEntity;
 /// A spawned teleporter pad: stepping onto it sends the player to room `to`, the
 /// cell `dest` `(col, row)` in grid coords (row 0 = top).
 #[derive(Component)]
-struct Teleporter {
+pub(crate) struct Teleporter {
     to: String,
     dest: (i32, i32),
 }
@@ -265,9 +265,6 @@ impl Default for TeleportArmed {
         Self(true)
     }
 }
-
-/// Teleporter pad colour (a glowing square — no sprite asset needed).
-const TELEPORT_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
 
 /// Grid glyph marking a bench: a checkpoint that saves the game, refills hearts,
 /// resets enemies, and becomes the player's respawn point.
@@ -315,6 +312,7 @@ pub(crate) struct GameAssets {
     pub(crate) tile: Handle<Image>,
     pub(crate) player: Handle<Image>,
     pub(crate) spikes: Handle<Image>,
+    pub(crate) portal: Handle<Image>,
 }
 
 /// The room the player is currently in: its name, neighbours and pixel size.
@@ -436,6 +434,7 @@ fn load_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
         tile: asset_server.load("sprites/tile.png"),
         player: asset_server.load("sprites/player.png"),
         spikes: asset_server.load("sprites/spikes.png"),
+        portal: asset_server.load("sprites/portal.png"),
     });
     commands.insert_resource(RockSprite(asset_server.load("sprites/rock.png")));
 }
@@ -453,6 +452,7 @@ fn wait_for_load(
     let sprites_ready = asset_server.is_loaded_with_dependencies(assets.tile.id())
         && asset_server.is_loaded_with_dependencies(assets.player.id())
         && asset_server.is_loaded_with_dependencies(assets.spikes.id())
+        && asset_server.is_loaded_with_dependencies(assets.portal.id())
         && asset_server.is_loaded_with_dependencies(rock.0.id());
 
     if maps_ready && sprites_ready {
@@ -651,7 +651,7 @@ fn handle_load_map(
                     dest: (tp.dest_col, tp.dest_row),
                 },
                 Sprite {
-                    color: TELEPORT_COLOR,
+                    image: assets.portal.clone(),
                     custom_size: Some(Vec2::splat(TILE)),
                     ..default()
                 },

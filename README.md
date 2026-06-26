@@ -79,8 +79,9 @@ show on the world map as warm cells.
 
 Besides the edge doors, rooms can be wired together with **teleporters** — pads
 that link two distant rooms (or two spots in the same room) directly. Each pad
-stores its destination as explicit room + cell coordinates, and shows on the world
-map as a cyan cell.
+stores its destination as explicit room + cell coordinates, shows on the world map
+as a cyan cell, and in play is an **animated halo** that flares active while you
+stand on it.
 
 ## Extending it
 
@@ -91,7 +92,7 @@ The structure is plugin-per-concern:
 | [`input`](src/input.rs) | Keyboard + gamepad → one `PlayerIntent`. |
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
 | [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`. |
-| [`anim`](src/anim.rs) | Player sprite-sheet animation: imports an N×M grid, plays idle/jump/damage clips. |
+| [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player (idle/jump/damage) + portal (idle/active) clips. |
 | [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
@@ -208,17 +209,23 @@ losing all hearts.
 ### Replace the art
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
-(`player.png`, `tile.png`, `spikes.png`, `rock.png`). Sizes are set in code via
-`custom_size`, so any resolution works — the world keeps the same scale.
+(`tile.png`, `spikes.png`, `rock.png`). Sizes are set in code via `custom_size`, so
+any resolution works — the world keeps the same scale.
 
-**`player.png` is a sprite sheet** — an N×M grid of equal frames ([`anim`](src/anim.rs)
-imports it, sizing each frame from the image ÷ grid). The placeholder is **4×3**:
-row 0 = idle (the last frame blinks), row 1 = jump, row 2 = damage. Redraw it with
-the same grid and it just works; for a different grid, change `PLAYER_COLS` /
-`PLAYER_ROWS` (and the `Clip` frame ranges) in [`anim`](src/anim.rs). The animation
-is driven by player state — grounded → idle, airborne → jump, i-frames → damage.
-Idle and damage **loop**; the jump plays its frames **once across the arc** (launch
-→ apex → fall), keyed to vertical velocity so it adapts to any jump height.
+**`player.png` and `portal.png` are sprite sheets** — each an N×M grid of equal
+frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing every frame
+from the image ÷ grid, so a re-drawn sheet of the same grid just works):
+
+- `player.png` is **4×3**: row 0 = idle (last frame blinks), row 1 = jump, row 2 =
+  damage. Driven by state — grounded → idle, airborne → jump, i-frames → damage;
+  idle/damage **loop**, the jump plays **once across the arc** (launch → apex →
+  fall), keyed to vertical velocity.
+- `portal.png` is **4×2**: row 0 = idle halo (loops), row 1 = active (loops while
+  the player stands on the pad).
+
+For a different grid, change the `*_COLS`/`*_ROWS` and `Clip` constants in
+[`anim`](src/anim.rs). To animate something new, load a sheet, attach a
+`SpriteAnimation`, and add a small controller that calls `SpriteAnimation::play`.
 
 ## Status
 
@@ -230,6 +237,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Made animation **extensible** (a generic `SpriteAnimation` +
+  clip/atlas core in [`anim`](src/anim.rs)) and gave **portals** a sprite sheet
+  (`portal.png`, 4×2): an idle waving halo that flares **active** while the player
+  stands on it. New animated entities just need a sheet, a `SpriteAnimation`, and a
+  tiny controller.
 - **2026-06-25** — The jump animation no longer loops: it plays its frames **once
   across the jump arc** (launch → apex → fall, held at the end), mapped to vertical
   velocity so it follows the actual jump rather than a fixed cadence.
