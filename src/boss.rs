@@ -565,7 +565,9 @@ fn update_boss_hud(
         (With<BossBarFill>, Without<BossBarBg>, Without<Camera2d>),
     >,
 ) {
-    let show = fight.locked;
+    // Only while a boss is actually present — a boss-less arena (e.g. an enemy fog wall)
+    // locks the exits too, but has no health bar to show.
+    let show = fight.locked && !boss.is_empty();
     let (
         Ok((camera_tf, projection)),
         Ok((mut bg_tf, mut bg_vis)),
