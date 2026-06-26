@@ -217,6 +217,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Replaced non-ASCII glyphs (`·`, `—`, `×`, `↔`, `−`) in on-screen
+  text with ASCII, since Bevy's default font doesn't include them — menu, HUD, and
+  builder labels now render fully.
+
 - **2026-06-25** — Added **hearts, benches, and a three-slot save system**. The
   player has 3 hearts (HUD top-left); hazards/pits cost a heart with brief i-frames,
   and losing all three respawns you at the last bench. **Benches** (`B` glyph, a

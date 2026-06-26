@@ -418,7 +418,7 @@ fn draw_zoom(
         draw_room(commands, center, Vec2::new(760.0, 392.0), map, 91.0);
     } else {
         label(commands, center, Vec2::new(0.0, 216.0), 26.0, &key);
-        label(commands, center, Vec2::ZERO, 20.0, "· empty ·");
+        label(commands, center, Vec2::ZERO, 20.0, "- empty -");
     }
     label(
         commands,

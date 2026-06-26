@@ -89,9 +89,9 @@ fn main_menu_items(screen: MenuScreen) -> Vec<(String, MenuAction)> {
 /// A one-line summary of a save slot for the picker.
 fn slot_label(slot: usize) -> String {
     match save::read_slot(slot) {
-        Some(s) if s.has_bench() => format!("Slot {} — bench in {}", slot + 1, s.bench_room),
-        Some(_) => format!("Slot {} — new game", slot + 1),
-        None => format!("Slot {} — empty", slot + 1),
+        Some(s) if s.has_bench() => format!("Slot {} - bench in {}", slot + 1, s.bench_room),
+        Some(_) => format!("Slot {} - new game", slot + 1),
+        None => format!("Slot {} - empty", slot + 1),
     }
 }
 

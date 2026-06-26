@@ -354,7 +354,7 @@ fn edit_tiles(
                 room.gy = gy;
             }
             room.grab = None;
-            room.status = "portal: pick the destination room (enter)   ·   esc cancels".to_string();
+            room.status = "portal: pick the destination room (enter)   |   esc cancels".to_string();
             next_view.set(EditorView::Rooms);
             redraw(&mut commands, &overlay);
             draw_room_map(&mut commands, center, &game_assets, &map_assets, &room);
@@ -497,7 +497,7 @@ fn draw_tiles(
         center + Vec2::new(0.0, 250.0),
         22.0,
         bright,
-        &format!("LEVEL BUILDER — {named}   {cols}×{rows}"),
+        &format!("LEVEL BUILDER - {named}   {cols}x{rows}"),
     );
     text_at(
         commands,
@@ -518,14 +518,14 @@ fn draw_tiles(
         center + Vec2::new(0.0, -241.0),
         13.0,
         dim,
-        "arrows move   ·   space paint   ·   X erase   ·   tab brush   ·   enter rename",
+        "arrows move   |   space paint   |   X erase   |   tab brush   |   enter rename",
     );
     text_at(
         commands,
         center + Vec2::new(0.0, -259.0),
         13.0,
         dim,
-        "[ ] − =  resize   ·   B colour   ·   S save   ·   M rooms   ·   esc exit",
+        "[ ] - =  resize   |   B colour   |   S save   |   M rooms   |   esc exit",
     );
 
     // Rename prompt overlays the centre while typing a display name.
@@ -603,7 +603,7 @@ fn edit_rooms(
                 // to the tile view to drop the exit.
                 next_view.set(EditorView::Tiles);
                 *buffer = load_buffer(&dest, &game_assets, &map_assets);
-                buffer.status = "portal: drop the exit (space)   ·   esc cancels".to_string();
+                buffer.status = "portal: drop the exit (space)   |   esc cancels".to_string();
                 redraw(&mut commands, &overlay);
                 draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
                 return;
@@ -654,7 +654,7 @@ fn edit_rooms(
         match room.grab {
             None if occupied => {
                 room.grab = Some(here);
-                status = Some("grabbed — move and press G to drop".to_string());
+                status = Some("grabbed - move and press G to drop".to_string());
             }
             Some(from) => {
                 let dest = (room.gx, room.gy);
@@ -677,7 +677,7 @@ fn edit_rooms(
             draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
             return;
         }
-        status = Some("empty — press A to add a room".to_string());
+        status = Some("empty - press A to add a room".to_string());
         changed = true;
     }
 
@@ -780,7 +780,7 @@ fn draw_room_map(
         center + Vec2::new(0.0, 200.0),
         24.0,
         bright,
-        &format!("ROOMS   ·   at {}", name_at((room.gx, room.gy))),
+        &format!("ROOMS   |   at {}", name_at((room.gx, room.gy))),
     );
     text_at(
         commands,
@@ -794,14 +794,14 @@ fn draw_room_map(
         center + Vec2::new(0.0, -198.0),
         13.0,
         dim,
-        "arrows move   ·   enter edit   ·   A add   ·   D delete",
+        "arrows move   |   enter edit   |   A add   |   D delete",
     );
     text_at(
         commands,
         center + Vec2::new(0.0, -216.0),
         13.0,
         dim,
-        "G grab / drop (reorder)   ·   R reset   ·   M back to tiles",
+        "G grab / drop (reorder)   |   R reset   |   M back to tiles",
     );
 }
 
@@ -1046,7 +1046,7 @@ fn link_portal(
         return "portal save failed (source)".to_string();
     }
 
-    format!("portal linked: {from_room} ↔ {to_room}")
+    format!("portal linked: {from_room} <-> {to_room}")
 }
 
 // --- default rooms (porting the offline generator) -----------------------
