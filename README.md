@@ -147,7 +147,7 @@ edits.
 | `X` | erase | `B` | recolour |
 | `Tab` | cycle brush | `Enter` | rename (type a name) |
 | `S` | save | `M` | room manager |
-| `Esc` | leave the builder | | |
+| `Space` (Portal brush) | start a portal link | `Esc` | leave the builder |
 
 **Rooms** (`M`) — manage the world as a grid:
 
@@ -165,10 +165,14 @@ standard-size (40×22) rooms get their doors opened/sealed to match. Rooms can s
 be **any size** in the tile view, but a custom-sized room manages its own doors.
 The builder is `#[cfg(debug_assertions)]`, so it's compiled out of `--release`.
 
-The builder has no teleporter brush yet, but it **preserves** a room's `teleports`
-through edits and saves — so hand-author them in the `.map.ron`, then keep using
-the builder for tiles. (Reordering rooms with `G` doesn't yet remap teleport
-targets, so re-check `to:` after a move.)
+**Portals** — `Tab` to the **Portal** brush and paint to drop the first endpoint;
+the room manager opens so you can pick the destination room (`Enter`), then you
+paint the exit in that room. The builder assigns a shared glyph and links the two
+rooms both ways automatically, saving both. Press **`Esc`** any time before the
+exit is placed to cancel — the first endpoint is only written once the link
+completes, so cancelling leaves nothing behind. Erasing a pad drops its link on the
+next save. (Reordering rooms with `G` doesn't remap portal targets, so re-check
+links after a move.)
 
 ### Replace the art
 
@@ -186,6 +190,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — The level builder can now **author portals**: a Portal brush
+  drops the first endpoint, the room manager opens to pick the destination room,
+  and painting there completes the two-way link (shared auto-assigned glyph, both
+  rooms saved). `Esc` cancels before completion and leaves nothing behind.
 - **2026-06-25** — Fixed the level builder's **room manager** (`M`): the tile and
   room views are now separate `EditorView` *states* instead of a plain resource,
   so switching no longer ran both input systems on the same frame and bounced the

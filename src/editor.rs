@@ -25,14 +25,28 @@ use crate::state::GameState;
 use crate::world::{CurrentRoom, GameAssets, MapData, START_MARKER, Teleport, map_fs_path};
 use crate::worldmap::MapView;
 
+/// Sentinel for the portal brush — never written to the grid. Painting it starts
+/// the two-room linking flow instead; the actual glyph is assigned on completion.
+const PORTAL_BRUSH: char = 'P';
+
 /// The paint brushes, by the grid character they write.
-const BRUSHES: [(char, &str); 5] = [
+const BRUSHES: [(char, &str); 6] = [
     ('#', "Wall"),
     ('^', "Spike"),
     ('R', "Rock"),
     (START_MARKER, "Start"),
+    (PORTAL_BRUSH, "Portal"),
     ('.', "Erase"),
 ];
+
+/// Glyphs auto-assigned to portal pairs (none clash with another legend, and one
+/// is only used if it's free in both linked rooms).
+const PORTAL_GLYPHS: [char; 16] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'T', 'U', 'V', 'W', 'Y', 'Z',
+];
+
+/// Editor colour for a teleporter pad (matches the in-game pad).
+const PORTAL_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
 
 /// Dark room tints to cycle through with `B`.
 const PALETTE: [[f32; 3]; 8] = [
@@ -96,6 +110,12 @@ struct RoomMap {
 #[derive(Resource, Default)]
 pub(crate) struct StartInEditor(pub bool);
 
+/// A portal mid-placement: the source room and the cell its first endpoint will
+/// take. `None` unless a link is in progress; cleared (without writing anything)
+/// on cancel, so cancelling removes the first portal.
+#[derive(Resource, Default)]
+struct PendingLink(Option<(String, (usize, usize))>);
+
 /// Tags every entity that makes up the builder overlay (despawned on redraw).
 #[derive(Component)]
 struct EditorEntity;
@@ -108,6 +128,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<RoomMap>()
             .init_state::<EditorView>()
             .init_resource::<StartInEditor>()
+            .init_resource::<PendingLink>()
             .add_systems(
                 Update,
                 (enter_editor, launch_from_menu).run_if(
@@ -177,10 +198,15 @@ fn open_editor(
     );
 }
 
-fn close_editor(mut commands: Commands, overlay: Query<Entity, With<EditorEntity>>) {
+fn close_editor(
+    mut commands: Commands,
+    mut pending: ResMut<PendingLink>,
+    overlay: Query<Entity, With<EditorEntity>>,
+) {
     for entity in &overlay {
         commands.entity(entity).despawn();
     }
+    pending.0 = None;
 }
 
 // --- tile view -----------------------------------------------------------
@@ -196,7 +222,8 @@ fn edit_tiles(
     mut map_assets: ResMut<Assets<MapData>>,
     mut current: ResMut<CurrentRoom>,
     mut next: ResMut<NextState<GameState>>,
-    room: Res<RoomMap>,
+    mut room: ResMut<RoomMap>,
+    mut pending: ResMut<PendingLink>,
     rock: Res<RockSprite>,
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<EditorEntity>>,
@@ -218,6 +245,53 @@ fn edit_tiles(
         }
         redraw(&mut commands, &overlay);
         draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        return;
+    }
+
+    // Placing the second endpoint of a portal, in the room we navigated to.
+    if let Some((from_room, from_cell)) = pending.0.clone() {
+        let cols = buffer.grid.first().map_or(0, Vec::len);
+        let rows = buffer.grid.len();
+        let mut moved = false;
+        if keys.just_pressed(KeyCode::ArrowLeft) && buffer.cursor.0 > 0 {
+            buffer.cursor.0 -= 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowRight) && buffer.cursor.0 + 1 < cols {
+            buffer.cursor.0 += 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowUp) && buffer.cursor.1 > 0 {
+            buffer.cursor.1 -= 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowDown) && buffer.cursor.1 + 1 < rows {
+            buffer.cursor.1 += 1;
+            moved = true;
+        }
+
+        if keys.just_pressed(KeyCode::Escape) {
+            // The source endpoint was never written, so there's nothing to undo.
+            pending.0 = None;
+            *buffer = load_buffer(&from_room, &game_assets, &map_assets);
+            buffer.status = "portal cancelled".to_string();
+            redraw(&mut commands, &overlay);
+            draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        } else if keys.just_pressed(KeyCode::Space) {
+            pending.0 = None;
+            buffer.status = link_portal(
+                &from_room,
+                from_cell,
+                &mut buffer,
+                &mut game_assets,
+                &mut map_assets,
+            );
+            redraw(&mut commands, &overlay);
+            draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        } else if moved {
+            redraw(&mut commands, &overlay);
+            draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        }
         return;
     }
 
@@ -262,6 +336,24 @@ fn edit_tiles(
 
     if keys.just_pressed(KeyCode::Space) {
         let (c, r) = buffer.cursor;
+        if BRUSHES[buffer.brush].0 == PORTAL_BRUSH {
+            // Persist the source room first (so its current edits survive the trip
+            // through the room manager — `link_portal` writes the endpoint into the
+            // saved room), then remember this endpoint and open the manager to pick
+            // where the other side goes.
+            save_tiles(&buffer, &mut game_assets, &mut map_assets);
+            pending.0 = Some((buffer.name.clone(), (c, r)));
+            if let Some((gx, gy)) = parse_pos(&buffer.name) {
+                room.gx = gx;
+                room.gy = gy;
+            }
+            room.grab = None;
+            room.status = "portal: pick the destination room (enter)   ·   esc cancels".to_string();
+            next_view.set(EditorView::Rooms);
+            redraw(&mut commands, &overlay);
+            draw_room_map(&mut commands, center, &game_assets, &map_assets, &room);
+            return;
+        }
         buffer.grid[r][c] = BRUSHES[buffer.brush].0;
         changed = true;
     }
@@ -341,11 +433,11 @@ fn draw_tiles(
     );
     for (r, row) in buffer.grid.iter().enumerate() {
         for (c, &ch) in row.iter().enumerate() {
+            let pos = Vec2::new(
+                top_left.x + (c as f32 + 0.5) * tile,
+                top_left.y - (r as f32 + 0.5) * tile,
+            );
             if let Some(image) = sprite_for(ch, assets, rock) {
-                let pos = Vec2::new(
-                    top_left.x + (c as f32 + 0.5) * tile,
-                    top_left.y - (r as f32 + 0.5) * tile,
-                );
                 commands.spawn((
                     EditorEntity,
                     Sprite {
@@ -355,6 +447,17 @@ fn draw_tiles(
                     },
                     Transform::from_xyz(pos.x, pos.y, 152.0),
                 ));
+            } else if buffer.teleports.iter().any(|t| t.glyph == ch) {
+                // Teleporter pad: a cyan square labelled with its glyph (the pair
+                // sharing a glyph are the two ends of one portal).
+                box_at(commands, pos, Vec2::splat(tile * 0.9), 152.0, PORTAL_COLOR);
+                text_at(
+                    commands,
+                    pos,
+                    tile * 0.6,
+                    Color::srgb(0.05, 0.1, 0.16),
+                    &ch.to_string(),
+                );
             }
         }
     }
@@ -451,11 +554,56 @@ fn edit_rooms(
     mut buffer: ResMut<EditBuffer>,
     mut game_assets: ResMut<GameAssets>,
     mut map_assets: ResMut<Assets<MapData>>,
+    mut pending: ResMut<PendingLink>,
     rock: Res<RockSprite>,
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<EditorEntity>>,
 ) {
     let center = camera_center(&camera);
+
+    // Choosing a portal's destination room: a focused mode with no other room ops.
+    if let Some((from_room, _)) = pending.0.clone() {
+        if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyM) {
+            // Cancel: drop the pending portal and return to its source room.
+            pending.0 = None;
+            next_view.set(EditorView::Tiles);
+            *buffer = load_buffer(&from_room, &game_assets, &map_assets);
+            buffer.status = "portal cancelled".to_string();
+            redraw(&mut commands, &overlay);
+            draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+            return;
+        }
+
+        let dx = i32::from(keys.just_pressed(KeyCode::ArrowRight))
+            - i32::from(keys.just_pressed(KeyCode::ArrowLeft));
+        let dy = i32::from(keys.just_pressed(KeyCode::ArrowUp))
+            - i32::from(keys.just_pressed(KeyCode::ArrowDown));
+        if dx != 0 || dy != 0 {
+            room.gx = (room.gx + dx).max(0);
+            room.gy = (room.gy + dy).max(0);
+        }
+
+        if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
+            let dest = name_at((room.gx, room.gy));
+            if room_data(&game_assets, &map_assets, &dest).is_none() {
+                room.status = "portal: pick an existing room".to_string();
+            } else if dest == from_room {
+                room.status = "portal: can't link a room to itself".to_string();
+            } else {
+                // Load the destination and hand back to the tile view to drop the exit.
+                next_view.set(EditorView::Tiles);
+                *buffer = load_buffer(&dest, &game_assets, &map_assets);
+                buffer.status = "portal: drop the exit (space)   ·   esc cancels".to_string();
+                redraw(&mut commands, &overlay);
+                draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+                return;
+            }
+        }
+
+        redraw(&mut commands, &overlay);
+        draw_room_map(&mut commands, center, &game_assets, &map_assets, &room);
+        return;
+    }
 
     // Leave the room map.
     if keys.just_pressed(KeyCode::KeyM)
@@ -784,19 +932,93 @@ fn cut_doors(map: &mut MapData) {
 
 fn save_tiles(buffer: &EditBuffer, assets: &mut GameAssets, maps: &mut Assets<MapData>) -> String {
     let map = map_from_buffer(buffer);
-    if std::fs::write(map_fs_path(&buffer.name), map.to_ron()).is_err() {
-        return "save failed".to_string();
+    if persist_map(&buffer.name, &map, assets, maps) {
+        format!("saved {}", buffer.name)
+    } else {
+        "save failed".to_string()
     }
-    let id = assets.maps.get(&buffer.name).map(Handle::id);
+}
+
+/// Write a room to disk and refresh its live asset (registering it if new), so the
+/// running game reflects the edit. Returns false only on a write error.
+fn persist_map(
+    name: &str,
+    map: &MapData,
+    assets: &mut GameAssets,
+    maps: &mut Assets<MapData>,
+) -> bool {
+    if std::fs::write(map_fs_path(name), map.to_ron()).is_err() {
+        return false;
+    }
+    let id = assets.maps.get(name).map(Handle::id);
     if !matches!(id, Some(id) if maps.get_mut(id).map(|mut slot| *slot = map.clone()).is_some()) {
-        let handle = maps.add(map);
-        assets.maps.insert(buffer.name.clone(), handle);
-        if !assets.room_names.contains(&buffer.name) {
-            assets.room_names.push(buffer.name.clone());
+        let handle = maps.add(map.clone());
+        assets.maps.insert(name.to_string(), handle);
+        if !assets.room_names.contains(&name.to_string()) {
+            assets.room_names.push(name.to_string());
             assets.room_names.sort();
         }
     }
-    format!("saved {}", buffer.name)
+    true
+}
+
+/// First portal glyph not already in `used` (so it's unique within both rooms).
+fn free_portal_glyph(used: &HashSet<char>) -> Option<char> {
+    PORTAL_GLYPHS.iter().copied().find(|g| !used.contains(g))
+}
+
+/// Complete a portal: drop a freshly-assigned glyph in both the source room
+/// (`from_room` at `from_cell`) and the destination (`buffer`, at its cursor), each
+/// linking `to` the other, and save both. Returns a status message.
+fn link_portal(
+    from_room: &str,
+    from_cell: (usize, usize),
+    buffer: &mut EditBuffer,
+    assets: &mut GameAssets,
+    maps: &mut Assets<MapData>,
+) -> String {
+    let to_room = buffer.name.clone();
+    let Some(mut source) = room_data(assets, maps, from_room).cloned() else {
+        return format!("portal source '{from_room}' is gone");
+    };
+
+    // Pick a glyph unused in either room.
+    let mut used: HashSet<char> = source.tiles.iter().flat_map(|r| r.chars()).collect();
+    used.extend(buffer.grid.iter().flat_map(|r| r.iter().copied()));
+    let Some(glyph) = free_portal_glyph(&used) else {
+        return "no free portal glyph".to_string();
+    };
+
+    // Destination endpoint goes through the live buffer (saved below).
+    let (bc, br) = buffer.cursor;
+    buffer.grid[br][bc] = glyph;
+    buffer.teleports.push(Teleport {
+        glyph,
+        to: from_room.to_string(),
+    });
+    let dest_map = map_from_buffer(buffer);
+    if !persist_map(&to_room, &dest_map, assets, maps) {
+        return "portal save failed (destination)".to_string();
+    }
+
+    // Source endpoint is written straight into its room data.
+    let (col, row) = from_cell;
+    if let Some(line) = source.tiles.get_mut(row) {
+        let mut chars: Vec<char> = line.chars().collect();
+        if col < chars.len() {
+            chars[col] = glyph;
+        }
+        *line = chars.into_iter().collect();
+    }
+    source.teleports.push(Teleport {
+        glyph,
+        to: to_room.clone(),
+    });
+    if !persist_map(from_room, &source, assets, maps) {
+        return "portal save failed (source)".to_string();
+    }
+
+    format!("portal linked: {from_room} ↔ {to_room}")
 }
 
 // --- default rooms (porting the offline generator) -----------------------
@@ -994,6 +1216,20 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
 }
 
 fn map_from_buffer(buffer: &EditBuffer) -> MapData {
+    let tiles: Vec<String> = buffer
+        .grid
+        .iter()
+        .map(|row| row.iter().collect::<String>())
+        .collect();
+    // Drop teleports whose pad glyph is no longer in the grid (e.g. erased), so we
+    // never save a teleporter with no pad.
+    let present: HashSet<char> = tiles.iter().flat_map(|r| r.chars()).collect();
+    let teleports = buffer
+        .teleports
+        .iter()
+        .filter(|t| present.contains(&t.glyph))
+        .cloned()
+        .collect();
     MapData {
         name: buffer.display.clone(),
         solid: "#".to_string(),
@@ -1003,13 +1239,9 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         south: buffer.south.clone(),
         east: buffer.east.clone(),
         west: buffer.west.clone(),
-        teleports: buffer.teleports.clone(),
+        teleports,
         bg: buffer.bg,
-        tiles: buffer
-            .grid
-            .iter()
-            .map(|row| row.iter().collect::<String>())
-            .collect(),
+        tiles,
     }
 }
 
@@ -1171,5 +1403,18 @@ mod tests {
         // The shaft's ceiling gap is open (north door) and the floor is sealed.
         assert_eq!(start.tiles[0].chars().nth(9), Some('.'));
         assert_eq!(start.tiles[21].chars().nth(9), Some('#'));
+    }
+
+    /// Portal glyphs avoid characters already in use, and run out gracefully.
+    #[test]
+    fn portal_glyph_skips_used_chars() {
+        let mut used: HashSet<char> = "#^R@.".chars().collect();
+        let glyph = free_portal_glyph(&used).expect("a glyph is free");
+        assert!(!used.contains(&glyph));
+        assert!(PORTAL_GLYPHS.contains(&glyph));
+
+        // With every portal glyph taken, there's nothing left to assign.
+        used.extend(PORTAL_GLYPHS);
+        assert_eq!(free_portal_glyph(&used), None);
     }
 }
