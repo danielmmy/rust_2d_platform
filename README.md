@@ -240,6 +240,9 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — New Game now **confirms before overwriting** an occupied save
+  slot (an "OVERWRITE SAVE?" prompt defaulting to Back); empty slots start
+  immediately as before.
 - **2026-06-25** — Fixed a teleport loop: taking damage after using a portal could
   respawn the player onto the destination pad and immediately fire it back to the
   origin. Damage now disarms teleporters until the player steps clear.

@@ -36,6 +36,8 @@ enum MenuScreen {
     NewSlots,
     /// Pick a slot to load.
     LoadSlots,
+    /// Confirm overwriting an occupied slot with a new game (carries the slot).
+    ConfirmNew(usize),
 }
 
 /// Tags every entity that makes up a menu (despawned when it closes or redraws).
@@ -56,6 +58,8 @@ enum MenuAction {
     NewGame,
     LoadGame,
     PickSlot(usize),
+    /// Confirm erasing the occupied slot (held in the screen) and start fresh.
+    ConfirmNew,
     Back,
     Continue,
     Quit,
@@ -83,6 +87,13 @@ fn main_menu_items(screen: MenuScreen) -> Vec<(String, MenuAction)> {
             items.push(("Back".to_string(), MenuAction::Back));
             items
         }
+        MenuScreen::ConfirmNew(slot) => vec![
+            (
+                format!("Erase slot {} and start", slot + 1),
+                MenuAction::ConfirmNew,
+            ),
+            ("Back".to_string(), MenuAction::Back),
+        ],
     }
 }
 
@@ -108,6 +119,7 @@ fn menu_title(screen: MenuScreen) -> &'static str {
         MenuScreen::Main => "PLATFORMER",
         MenuScreen::NewSlots => "NEW GAME",
         MenuScreen::LoadSlots => "LOAD GAME",
+        MenuScreen::ConfirmNew(_) => "OVERWRITE SAVE?",
     }
 }
 
@@ -213,6 +225,27 @@ fn redraw_main(
     );
 }
 
+/// Write a fresh save to `slot` (overwriting any existing one) and start playing.
+fn start_new_game(
+    slot: usize,
+    save_res: &mut Save,
+    pending: &mut PendingSpawn,
+    game_state: &mut NextState<GameState>,
+) {
+    let fresh = Save {
+        slot,
+        room: START_MAP.to_string(),
+        ..default()
+    };
+    save::write_save(&fresh);
+    *save_res = fresh;
+    pending.0 = Some(SpawnRequest {
+        room: START_MAP.to_string(),
+        at_cell: None,
+    });
+    game_state.set(GameState::Loading);
+}
+
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn main_menu_update(
     mut commands: Commands,
@@ -249,24 +282,24 @@ fn main_menu_update(
             redraw_main(&mut commands, &menu, *screen, &camera);
         }
         MenuAction::Back => {
-            *screen = MenuScreen::Main;
+            // From a confirm prompt, step back to slot selection; else to the top.
+            *screen = match *screen {
+                MenuScreen::ConfirmNew(_) => MenuScreen::NewSlots,
+                _ => MenuScreen::Main,
+            };
             cursor.0 = 0;
             redraw_main(&mut commands, &menu, *screen, &camera);
         }
         MenuAction::PickSlot(slot) => match *screen {
             MenuScreen::NewSlots => {
-                let fresh = Save {
-                    slot,
-                    room: START_MAP.to_string(),
-                    ..default()
-                };
-                save::write_save(&fresh);
-                *save_res = fresh;
-                pending.0 = Some(SpawnRequest {
-                    room: START_MAP.to_string(),
-                    at_cell: None,
-                });
-                game_state.set(GameState::Loading);
+                if save::read_slot(slot).is_some() {
+                    // Occupied — confirm before erasing it.
+                    *screen = MenuScreen::ConfirmNew(slot);
+                    cursor.0 = 1; // default to the safe "Back" option
+                    redraw_main(&mut commands, &menu, *screen, &camera);
+                } else {
+                    start_new_game(slot, &mut save_res, &mut pending, &mut game_state);
+                }
             }
             MenuScreen::LoadSlots => {
                 // Only act on a slot that actually has a save.
@@ -284,8 +317,13 @@ fn main_menu_update(
                     game_state.set(GameState::Loading);
                 }
             }
-            MenuScreen::Main => {}
+            _ => {}
         },
+        MenuAction::ConfirmNew => {
+            if let MenuScreen::ConfirmNew(slot) = *screen {
+                start_new_game(slot, &mut save_res, &mut pending, &mut game_state);
+            }
+        }
         MenuAction::Quit => {
             exit.write(AppExit::Success);
         }
