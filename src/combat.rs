@@ -36,6 +36,14 @@ pub(crate) enum EnemyAi {
     Patrol,
     /// Chase the player while within `aggro` pixels; patrol otherwise.
     Chase { aggro: f32 },
+    /// Amble until the player is within `aggro`, then leap toward them (a hop
+    /// onto their head) with vertical speed `jump`. After a leap it waits
+    /// `cooldown` seconds before it can jump again, so it can't spam pounces.
+    Pounce {
+        aggro: f32,
+        jump: f32,
+        cooldown: f32,
+    },
 }
 
 /// A fully data-driven enemy type: stats, behaviour ([`ai`](EnemyKind::ai)), and
@@ -55,7 +63,7 @@ pub(crate) struct EnemyKind {
 
 /// The enemy types, indexed by the `kind` in a map's `enemies` array. Index 0 is
 /// the default when an `E` glyph has no matching entry.
-pub(crate) const ENEMY_KINDS: [EnemyKind; 2] = [
+pub(crate) const ENEMY_KINDS: [EnemyKind; 4] = [
     // Basic: ambling purple patroller.
     EnemyKind {
         health: 3,
@@ -88,6 +96,47 @@ pub(crate) const ENEMY_KINDS: [EnemyKind; 2] = [
             playback: Playback::Loop,
         },
     },
+    // Green leaper: hops toward the player, aiming for their head.
+    EnemyKind {
+        health: 2,
+        color: Color::srgb(0.45, 0.78, 0.42),
+        speed: 92.0,
+        ai: EnemyAi::Pounce {
+            aggro: 170.0,
+            jump: 380.0,
+            cooldown: 1.4,
+        },
+        sheet: "jumper.png",
+        cols: 2,
+        rows: 1,
+        clip: Clip {
+            first: 0,
+            count: 2,
+            fps: 5.0,
+            playback: Playback::Loop,
+        },
+    },
+    // Amber leaper: a beefier, harder-hitting jumper — more health, a stronger,
+    // farther-reaching pounce, but a slightly longer recovery between leaps.
+    EnemyKind {
+        health: 4,
+        color: Color::srgb(0.93, 0.62, 0.24),
+        speed: 104.0,
+        ai: EnemyAi::Pounce {
+            aggro: 210.0,
+            jump: 430.0,
+            cooldown: 1.7,
+        },
+        sheet: "jumper.png",
+        cols: 2,
+        rows: 1,
+        clip: Clip {
+            first: 0,
+            count: 2,
+            fps: 6.0,
+            playback: Playback::Loop,
+        },
+    },
 ];
 
 /// A spawned enemy: its [`kind`](Enemy::kind) (indexing [`ENEMY_KINDS`]), remaining
@@ -98,6 +147,8 @@ pub(crate) struct Enemy {
     health: i32,
     dir: f32,
     vy: f32,
+    /// Seconds remaining before a [`Pounce`](EnemyAi::Pounce) enemy may leap again.
+    jump_cd: f32,
 }
 
 impl Enemy {
@@ -109,6 +160,7 @@ impl Enemy {
             health: ENEMY_KINDS[kind].health,
             dir: 1.0,
             vy: 0.0,
+            jump_cd: 0.0,
         }
     }
 }
@@ -130,32 +182,65 @@ fn enemy_ai(
     for (mut transform, mut enemy, mut sprite) in &mut enemies {
         let kind = &ENEMY_KINDS[enemy.kind];
         let mut center = transform.translation.truncate();
+        let grounded = solids.solid_at(center.x, center.y - ENEMY_HALF.y - 2.0);
+        enemy.jump_cd = (enemy.jump_cd - dt).max(0.0);
 
-        // Chase: face the player while within aggro range; otherwise patrol.
-        let chasing = match kind.ai {
-            EnemyAi::Chase { aggro } => match player_pos {
+        // Is the player within this kind's aggro range? If so, face them.
+        let engaged = |enemy: &mut Enemy| -> bool {
+            let aggro = match kind.ai {
+                EnemyAi::Chase { aggro } | EnemyAi::Pounce { aggro, .. } => aggro,
+                EnemyAi::Patrol => return false,
+            };
+            match player_pos {
                 Some(pp) if center.distance(pp) < aggro => {
                     enemy.dir = if pp.x >= center.x { 1.0 } else { -1.0 };
                     true
                 }
                 _ => false,
-            },
-            EnemyAi::Patrol => false,
+            }
         };
+        let engaged = engaged(&mut enemy);
+
+        // A pouncer that's engaged, grounded and off cooldown leaps at the player.
+        if let EnemyAi::Pounce { jump, cooldown, .. } = kind.ai
+            && engaged
+            && grounded
+            && enemy.jump_cd <= 0.0
+        {
+            enemy.vy = jump;
+            enemy.jump_cd = cooldown;
+        }
 
         // A wall or ledge directly ahead in the current facing.
-        let grounded = solids.solid_at(center.x, center.y - ENEMY_HALF.y - 2.0);
         let ahead = center.x + enemy.dir * (ENEMY_HALF.x + 2.0);
-        let blocked = solids.solid_at(ahead, center.y)
-            || (grounded && !solids.solid_at(ahead, center.y - ENEMY_HALF.y - 2.0));
+        let wall = solids.solid_at(ahead, center.y);
+        let ledge = grounded && !solids.solid_at(ahead, center.y - ENEMY_HALF.y - 2.0);
 
         let mut step = enemy.dir * kind.speed * dt;
-        if blocked {
-            if chasing {
-                step = 0.0; // a chaser waits at the edge rather than turning or falling
-            } else {
-                enemy.dir = -enemy.dir; // a patroller turns around
-                step = enemy.dir * kind.speed * dt;
+        match kind.ai {
+            // Patrollers (and idle chasers) reverse at walls and ledges.
+            EnemyAi::Patrol => {
+                if wall || ledge {
+                    enemy.dir = -enemy.dir;
+                    step = enemy.dir * kind.speed * dt;
+                }
+            }
+            EnemyAi::Chase { .. } => {
+                if engaged {
+                    if wall || ledge {
+                        step = 0.0; // wait at the edge rather than turning or falling
+                    }
+                } else if wall || ledge {
+                    enemy.dir = -enemy.dir;
+                    step = enemy.dir * kind.speed * dt;
+                }
+            }
+            // A pouncer only travels horizontally while airborne (its committed
+            // leap); on the ground it stays put, telegraphing the next hop.
+            EnemyAi::Pounce { .. } => {
+                if grounded || wall {
+                    step = 0.0;
+                }
             }
         }
 

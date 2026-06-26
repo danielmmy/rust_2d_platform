@@ -234,9 +234,10 @@ losing all hearts.
 ### Replace the art
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
-(`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `orb.png`, `slash.png`). Sizes
-are set in code via `custom_size`, so any resolution works — the world keeps the
-same scale. The enemy sprite is **near-white** so each kind tints it to its colour.
+(`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `orb.png`,
+`slash.png`). Sizes are set in code via `custom_size`, so any resolution works — the
+world keeps the same scale. The enemy sheets (`enemy.png` walkers, `jumper.png`
+leapers) are **near-white** so each kind tints them to its colour.
 
 **`player.png`, `portal.png`, and `bench.png` are sprite sheets** — each an N×M
 grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
@@ -266,6 +267,12 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — New **leaper** enemy (`jumper.png`, a crouch→stretch hopper) with a
+  `Pounce` AI: it ambles until you're in aggro range, then leaps toward your head, and
+  **waits out a cooldown after each jump** so it can't spam pounces (it only travels
+  horizontally mid-air, telegraphing on the ground). Ships as two tinted variants —
+  green (kind 2) and a beefier amber (kind 3, *more health*, a stronger/farther leap,
+  slightly longer recovery). Both appear in the starting room.
 - **2026-06-26** — Sword hits now register reliably: the strike's hitbox stays **live
   for a short window** (`SWING_ACTIVE`) and is re-checked every frame, hitting each
   enemy at most once per swing. Previously the box was tested on the single press
