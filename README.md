@@ -29,9 +29,11 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 The game opens on a **main menu** (New Game / Load Game / Quit). **New Game** and
 **Load Game** open a **three-slot** picker — pick a slot to load, or to start fresh
 (overwriting a used slot asks first, then lets you **type a name** for the save).
-During play, **`Esc`** (or `Select`) brings up a **pause menu** (Continue / **Main
-Menu** / Quit). Menus are navigated with up/down and confirmed with jump / `Enter`.
-In **debug builds** both menus gain a **Level Builder** entry (see below).
+During play, **`Esc`** (or `Select`) brings up a **pause menu** (Continue /
+**Character** / **Main Menu** / Quit); **Character** opens a read-only stat sheet
+sub-screen (the same one `C` shows). Menus are navigated with up/down and confirmed
+with jump / `Enter`. In **debug builds** both menus gain a **Level Builder** entry
+(see below).
 
 Your **health** is a **bar** at the top-left that's **green when full and shades
 through yellow to red** as it drops (a continuous bar, so it reads cleanly however
@@ -292,6 +294,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — The **pause menu** gained a **Character** entry that opens a
+  read-only **status sheet** sub-screen (stats, energy, any pending bloodstain) with a
+  *Back* row. It reuses the same source lines as the `C` overlay via a shared
+  `stats::character_lines` helper, so the two never drift.
 - **2026-06-26** — Replaced the row of heart pips with a single **continuous health
   bar** whose fill **shades green → yellow → red** as health drops (hue mapped to the
   fraction). It scales cleanly with the higher maximums Vitality unlocks, where a

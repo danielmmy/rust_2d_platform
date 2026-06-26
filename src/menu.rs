@@ -3,8 +3,9 @@
 //! The game boots into [`GameState::MainMenu`]. The title screen has a few screens:
 //! the main list, and a save-slot picker for **New Game** / **Load Game** (a
 //! three-slot system — see [`crate::save`]). During play, `Esc` (or the gamepad
-//! `Select` button) toggles a [`Paused`] overlay (Continue / Quit); gameplay is
-//! frozen while paused (the gameplay [`GameSet`](crate::GameSet) chain is gated on
+//! `Select` button) toggles a [`Paused`] overlay (Continue / **Character** / Main Menu
+//! / Quit); **Character** opens a read-only stat sheet sub-screen. Gameplay is frozen
+//! while paused (the gameplay [`GameSet`](crate::GameSet) chain is gated on
 //! [`Paused::Running`]).
 //!
 //! Menus are drawn the lightweight way the world map is — a backdrop sprite plus
@@ -16,8 +17,10 @@ use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 
+use crate::combat::{Energy, LostEnergy};
 use crate::save::{self, SLOTS, Save};
 use crate::state::GameState;
+use crate::stats::{Stats, character_lines};
 use crate::world::{PendingSpawn, START_MAP, SpawnRequest};
 use crate::worldmap::MapView;
 
@@ -42,6 +45,15 @@ enum MenuScreen {
     ConfirmNew(usize),
     /// Type a name for the new game in this slot, then start.
     NameEntry(usize),
+}
+
+/// Which pause sub-screen is showing.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+enum PauseScreen {
+    #[default]
+    Root,
+    /// The read-only character status sheet.
+    Character,
 }
 
 /// The name being typed for a new game (in the [`MenuScreen::NameEntry`] screen).
@@ -73,6 +85,8 @@ enum MenuAction {
     ConfirmNew,
     Back,
     Continue,
+    /// Open the pause menu's read-only character status sheet.
+    Character,
     /// Leave a paused game back to the title screen.
     MainMenu,
     Quit,
@@ -124,7 +138,10 @@ fn slot_label(slot: usize) -> String {
 }
 
 fn pause_menu_items() -> Vec<(String, MenuAction)> {
-    let mut items = vec![("Continue".to_string(), MenuAction::Continue)];
+    let mut items = vec![
+        ("Continue".to_string(), MenuAction::Continue),
+        ("Character".to_string(), MenuAction::Character),
+    ];
     #[cfg(debug_assertions)]
     items.push(("Level Builder".to_string(), MenuAction::OpenEditor));
     items.push(("Main Menu".to_string(), MenuAction::MainMenu));
@@ -153,6 +170,7 @@ impl Plugin for MenuPlugin {
         app.init_state::<Paused>()
             .init_resource::<MenuCursor>()
             .init_resource::<MenuScreen>()
+            .init_resource::<PauseScreen>()
             .init_resource::<NewGameName>()
             .add_systems(OnEnter(GameState::MainMenu), spawn_main_menu)
             .add_systems(OnExit(GameState::MainMenu), despawn_menu)
@@ -194,8 +212,10 @@ fn spawn_main_menu(
 fn spawn_pause_menu(
     mut commands: Commands,
     mut cursor: ResMut<MenuCursor>,
+    mut screen: ResMut<PauseScreen>,
     camera: Query<&Transform, With<Camera2d>>,
 ) {
+    *screen = PauseScreen::Root; // always open on the root list
     cursor.0 = 0;
     draw_menu(
         &mut commands,
@@ -435,27 +455,64 @@ fn main_menu_update(
             start_in_editor.0 = true;
         }
         // Only produced by the pause menu, handled in `pause_menu_update`.
-        MenuAction::Continue | MenuAction::MainMenu => {}
+        MenuAction::Continue | MenuAction::Character | MenuAction::MainMenu => {}
     }
 }
 
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn pause_menu_update(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     gamepads: Query<&Gamepad>,
     mut cursor: ResMut<MenuCursor>,
+    mut screen: ResMut<PauseScreen>,
     rows: Query<(&MenuItem, &mut TextColor)>,
+    menu: Query<Entity, With<MenuEntity>>,
+    camera: Query<&Transform, With<Camera2d>>,
+    stats: Res<Stats>,
+    energy: Res<Energy>,
+    lost: Res<LostEnergy>,
     mut next: ResMut<NextState<Paused>>,
     mut game_state: ResMut<NextState<GameState>>,
     mut exit: MessageWriter<AppExit>,
     #[cfg(debug_assertions)] mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
-    let items = pause_menu_items();
+    // The Character sub-screen offers only "Back"; the root offers the full list.
+    let items = match *screen {
+        PauseScreen::Root => pause_menu_items(),
+        PauseScreen::Character => vec![("Back".to_string(), MenuAction::Back)],
+    };
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
     };
     match items.get(choice).map(|(_, action)| *action) {
         Some(MenuAction::Continue) => next.set(Paused::Running),
+        Some(MenuAction::Character) => {
+            *screen = PauseScreen::Character;
+            cursor.0 = 0;
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                &stats,
+                &energy,
+                &lost,
+            );
+        }
+        Some(MenuAction::Back) => {
+            *screen = PauseScreen::Root;
+            cursor.0 = 0;
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                &stats,
+                &energy,
+                &lost,
+            );
+        }
         #[cfg(debug_assertions)]
         Some(MenuAction::OpenEditor) => {
             next.set(Paused::Running); // resume, then `editor` jumps in
@@ -471,6 +528,76 @@ fn pause_menu_update(
         }
         _ => {}
     }
+}
+
+/// Despawn and redraw the pause overlay for the current sub-screen.
+#[allow(clippy::too_many_arguments)] // distinct queries/resources, threaded to the draw
+fn redraw_pause(
+    commands: &mut Commands,
+    menu: &Query<Entity, With<MenuEntity>>,
+    camera: &Query<&Transform, With<Camera2d>>,
+    screen: PauseScreen,
+    stats: &Stats,
+    energy: &Energy,
+    lost: &LostEnergy,
+) {
+    for entity in menu.iter() {
+        commands.entity(entity).despawn();
+    }
+    let center = camera_center(camera);
+    match screen {
+        PauseScreen::Root => draw_menu(commands, center, "PAUSED", &labels(&pause_menu_items())),
+        PauseScreen::Character => {
+            draw_character_sheet(commands, center, &character_lines(stats, energy, lost));
+        }
+    }
+}
+
+/// Draw the read-only character status sheet: a title, the stat/energy lines, and a
+/// single selectable "Back" row.
+fn draw_character_sheet(commands: &mut Commands, center: Vec2, info: &[String]) {
+    commands.spawn((
+        MenuEntity,
+        Sprite {
+            color: Color::srgba(0.03, 0.03, 0.06, 0.97),
+            custom_size: Some(Vec2::new(960.0, 540.0)),
+            ..default()
+        },
+        Transform::from_xyz(center.x, center.y, 200.0),
+    ));
+    commands.spawn((
+        MenuEntity,
+        Text2d::new("CHARACTER"),
+        TextFont {
+            font_size: FontSize::Px(44.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.95, 0.96, 1.0)),
+        Transform::from_xyz(center.x, center.y + 160.0, 201.0),
+    ));
+    for (i, line) in info.iter().enumerate() {
+        commands.spawn((
+            MenuEntity,
+            Text2d::new(line.clone()),
+            TextFont {
+                font_size: FontSize::Px(24.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.78, 0.8, 0.88)),
+            Transform::from_xyz(center.x, center.y + 90.0 - i as f32 * 34.0, 201.0),
+        ));
+    }
+    commands.spawn((
+        MenuEntity,
+        MenuItem(0),
+        Text2d::new("Back"),
+        TextFont {
+            font_size: FontSize::Px(30.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.62, 0.64, 0.72)),
+        Transform::from_xyz(center.x, center.y - 190.0, 201.0),
+    ));
 }
 
 /// Move the cursor, recolour the rows, and return the chosen index on confirm.

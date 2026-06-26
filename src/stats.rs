@@ -114,6 +114,29 @@ impl Stat {
     }
 }
 
+/// The read-only character sheet as display lines: a row per stat, then energy, then
+/// any pending bloodstain. Shared by the `C` overlay and the pause menu's Character
+/// sub-screen so both stay in sync.
+pub(crate) fn character_lines(stats: &Stats, energy: &Energy, lost: &LostEnergy) -> Vec<String> {
+    let mut lines: Vec<String> = STATS_ORDER
+        .iter()
+        .map(|&stat| {
+            format!(
+                "{:9} Lv {:>2}   {}",
+                stat.name(),
+                stat.level(stats),
+                stat.effect(stats)
+            )
+        })
+        .collect();
+    lines.push(String::new());
+    lines.push(format!("Energy: {}", energy.0));
+    if lost.amount > 0 {
+        lines.push(format!("Lost {} energy in {}", lost.amount, lost.room));
+    }
+    lines
+}
+
 /// Whether the character screen is open. Gameplay freezes while it is.
 #[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CharMenu {
