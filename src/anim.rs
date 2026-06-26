@@ -13,7 +13,7 @@ use std::time::Duration;
 use bevy::prelude::*;
 
 use crate::health::Invuln;
-use crate::player::{JumpState, Player};
+use crate::player::{JumpState, MovementConfig, Player, Velocity};
 use crate::state::GameState;
 use crate::world::GameAssets;
 
@@ -21,7 +21,8 @@ use crate::world::GameAssets;
 const PLAYER_COLS: u32 = 4;
 const PLAYER_ROWS: u32 = 3;
 
-/// One animation: a run of `count` frames from `first`, played at `fps`, looping.
+/// One animation: a run of `count` frames from `first`. `fps` drives the looping
+/// clips (idle/damage); the jump instead maps its frames across the jump arc.
 struct Clip {
     first: usize,
     count: usize,
@@ -34,6 +35,7 @@ const IDLE: Clip = Clip {
     count: 4,
     fps: 5.0,
 };
+/// The jump clip plays **once** across the arc (launch → apex → fall), not looping.
 const JUMP: Clip = Clip {
     first: 4,
     count: 2,
@@ -124,9 +126,10 @@ fn attach_animation(
 fn animate_player(
     time: Res<Time>,
     invuln: Res<Invuln>,
-    mut player: Query<(&JumpState, &mut Sprite, &mut PlayerAnimation), With<Player>>,
+    cfg: Res<MovementConfig>,
+    mut player: Query<(&JumpState, &Velocity, &mut Sprite, &mut PlayerAnimation), With<Player>>,
 ) {
-    let Ok((jump, mut sprite, mut anim)) = player.single_mut() else {
+    let Ok((jump, velocity, mut sprite, mut anim)) = player.single_mut() else {
         return;
     };
 
@@ -147,12 +150,27 @@ fn animate_player(
         anim.timer.reset();
     }
 
-    anim.timer.tick(time.delta());
-    if anim.timer.just_finished() {
-        anim.frame = (anim.frame + 1) % clip.count;
-    }
+    let frame = if clip.first == JUMP.first {
+        // Jump: a single run mapped across the arc — launch (frame 0) → apex (mid) →
+        // max fall (last) — and held, rather than cycling. Robust to variable jump
+        // heights since it follows the actual vertical velocity, not a fixed time.
+        let denom = if velocity.0.y >= 0.0 {
+            cfg.jump_speed
+        } else {
+            cfg.max_fall
+        };
+        let progress = (0.5 - 0.5 * velocity.0.y / denom).clamp(0.0, 1.0);
+        ((progress * clip.count as f32) as usize).min(clip.count - 1)
+    } else {
+        // Idle / damage: loop on the frame timer.
+        anim.timer.tick(time.delta());
+        if anim.timer.just_finished() {
+            anim.frame = (anim.frame + 1) % clip.count;
+        }
+        anim.frame
+    };
 
     if let Some(atlas) = &mut sprite.texture_atlas {
-        atlas.index = clip.first + anim.frame;
+        atlas.index = clip.first + frame;
     }
 }

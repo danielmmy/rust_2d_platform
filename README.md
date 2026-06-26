@@ -217,6 +217,8 @@ row 0 = idle (the last frame blinks), row 1 = jump, row 2 = damage. Redraw it wi
 the same grid and it just works; for a different grid, change `PLAYER_COLS` /
 `PLAYER_ROWS` (and the `Clip` frame ranges) in [`anim`](src/anim.rs). The animation
 is driven by player state — grounded → idle, airborne → jump, i-frames → damage.
+Idle and damage **loop**; the jump plays its frames **once across the arc** (launch
+→ apex → fall), keyed to vertical velocity so it adapts to any jump height.
 
 ## Status
 
@@ -228,6 +230,9 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — The jump animation no longer loops: it plays its frames **once
+  across the jump arc** (launch → apex → fall, held at the end), mapped to vertical
+  velocity so it follows the actual jump rather than a fixed cadence.
 - **2026-06-25** — The player is now a **sprite sheet** (`player.png`, a 4×3 grid)
   with a small animation system ([`anim`](src/anim.rs)): it imports an N×M grid into
   a texture atlas and plays **idle** (with a blink), **jump**, and **damage** clips
