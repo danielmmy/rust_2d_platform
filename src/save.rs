@@ -17,6 +17,8 @@ pub const SLOTS: usize = 3;
 #[derive(Resource, Default, Clone)]
 pub struct Save {
     pub slot: usize,
+    /// Player-chosen name for the save (shown in the slot picker; may be empty).
+    pub name: String,
     pub room: String,
     pub bench_room: String,
     pub bench_col: i32,
@@ -32,8 +34,8 @@ fn slot_path(slot: usize) -> String {
 impl Save {
     fn to_ron(&self) -> String {
         format!(
-            "(room: \"{}\", bench_room: \"{}\", bench_col: {}, bench_row: {})\n",
-            self.room, self.bench_room, self.bench_col, self.bench_row
+            "(name: \"{}\", room: \"{}\", bench_room: \"{}\", bench_col: {}, bench_row: {})\n",
+            self.name, self.room, self.bench_room, self.bench_col, self.bench_row
         )
     }
 
@@ -54,6 +56,7 @@ impl Save {
         };
         Some(Save {
             slot,
+            name: opt_str("name"),
             room: value.field("room").ok()?.as_str().ok()?.to_string(),
             bench_room: opt_str("bench_room"),
             bench_col: opt_i32("bench_col"),
@@ -87,12 +90,14 @@ mod tests {
     fn save_round_trips_through_ron() {
         let save = Save {
             slot: 2,
+            name: "Wisp".to_string(),
             room: "r1_0".to_string(),
             bench_room: "r1_0".to_string(),
             bench_col: 6,
             bench_row: 20,
         };
         let parsed = Save::from_ron(2, &save.to_ron()).expect("parse");
+        assert_eq!(parsed.name, "Wisp");
         assert_eq!(parsed.room, "r1_0");
         assert_eq!(parsed.bench_room, "r1_0");
         assert_eq!(parsed.bench_col, 6);

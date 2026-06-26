@@ -25,10 +25,11 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | Pause | `Esc` | `Select` |
 
 The game opens on a **main menu** (New Game / Load Game / Quit). **New Game** and
-**Load Game** open a **three-slot** picker — pick a slot to start fresh, or load a
-slot you've saved. During play, **`Esc`** (or `Select`) brings up a **pause menu**
-(Continue / Quit). Menus are navigated with up/down and confirmed with jump /
-`Enter`. In **debug builds** both menus gain a **Level Builder** entry (see below).
+**Load Game** open a **three-slot** picker — pick a slot to load, or to start fresh
+(overwriting a used slot asks first, then lets you **type a name** for the save).
+During play, **`Esc`** (or `Select`) brings up a **pause menu** (Continue / **Main
+Menu** / Quit). Menus are navigated with up/down and confirmed with jump / `Enter`.
+In **debug builds** both menus gain a **Level Builder** entry (see below).
 
 You have **three hearts** (shown top-left). Spikes, falling rocks, and falling into
 a pit each cost a heart, with brief invulnerability after a hit; a non-fatal hit
@@ -240,6 +241,8 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Added a **Main Menu** option to the pause menu, and **New Game**
+  now lets you **type a name** for the save (shown in the slot picker).
 - **2026-06-26** — New Game now **confirms before overwriting** an occupied save
   slot (an "OVERWRITE SAVE?" prompt defaulting to Back); empty slots start
   immediately as before.

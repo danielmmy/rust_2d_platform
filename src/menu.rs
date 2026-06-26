@@ -12,6 +12,8 @@
 //! confirmed with jump / `Enter` / `South`.
 
 use bevy::app::AppExit;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 
 use crate::save::{self, SLOTS, Save};
@@ -38,7 +40,16 @@ enum MenuScreen {
     LoadSlots,
     /// Confirm overwriting an occupied slot with a new game (carries the slot).
     ConfirmNew(usize),
+    /// Type a name for the new game in this slot, then start.
+    NameEntry(usize),
 }
+
+/// The name being typed for a new game (in the [`MenuScreen::NameEntry`] screen).
+#[derive(Resource, Default)]
+struct NewGameName(String);
+
+/// Max length of a save name.
+const NAME_MAX: usize = 20;
 
 /// Tags every entity that makes up a menu (despawned when it closes or redraws).
 #[derive(Component)]
@@ -62,6 +73,8 @@ enum MenuAction {
     ConfirmNew,
     Back,
     Continue,
+    /// Leave a paused game back to the title screen.
+    MainMenu,
     Quit,
     /// Jump into the level builder — only offered in debug builds.
     #[cfg(debug_assertions)]
@@ -94,22 +107,27 @@ fn main_menu_items(screen: MenuScreen) -> Vec<(String, MenuAction)> {
             ),
             ("Back".to_string(), MenuAction::Back),
         ],
+        // Drawn specially (it needs the live name buffer) — see `draw_name_entry`.
+        MenuScreen::NameEntry(_) => Vec::new(),
     }
 }
 
 /// A one-line summary of a save slot for the picker.
 fn slot_label(slot: usize) -> String {
-    match save::read_slot(slot) {
-        Some(s) if s.has_bench() => format!("Slot {} - bench in {}", slot + 1, s.bench_room),
-        Some(_) => format!("Slot {} - new game", slot + 1),
-        None => format!("Slot {} - empty", slot + 1),
-    }
+    let detail = match save::read_slot(slot) {
+        Some(s) if !s.name.is_empty() => s.name,
+        Some(s) if s.has_bench() => format!("bench in {}", s.bench_room),
+        Some(_) => "new game".to_string(),
+        None => "empty".to_string(),
+    };
+    format!("Slot {} - {}", slot + 1, detail)
 }
 
 fn pause_menu_items() -> Vec<(String, MenuAction)> {
     let mut items = vec![("Continue".to_string(), MenuAction::Continue)];
     #[cfg(debug_assertions)]
     items.push(("Level Builder".to_string(), MenuAction::OpenEditor));
+    items.push(("Main Menu".to_string(), MenuAction::MainMenu));
     items.push(("Quit".to_string(), MenuAction::Quit));
     items
 }
@@ -120,6 +138,7 @@ fn menu_title(screen: MenuScreen) -> &'static str {
         MenuScreen::NewSlots => "NEW GAME",
         MenuScreen::LoadSlots => "LOAD GAME",
         MenuScreen::ConfirmNew(_) => "OVERWRITE SAVE?",
+        MenuScreen::NameEntry(_) => "NAME YOUR SAVE",
     }
 }
 
@@ -134,6 +153,7 @@ impl Plugin for MenuPlugin {
         app.init_state::<Paused>()
             .init_resource::<MenuCursor>()
             .init_resource::<MenuScreen>()
+            .init_resource::<NewGameName>()
             .add_systems(OnEnter(GameState::MainMenu), spawn_main_menu)
             .add_systems(OnExit(GameState::MainMenu), despawn_menu)
             .add_systems(
@@ -225,15 +245,17 @@ fn redraw_main(
     );
 }
 
-/// Write a fresh save to `slot` (overwriting any existing one) and start playing.
+/// Write a fresh, named save to `slot` (overwriting any existing one) and play.
 fn start_new_game(
     slot: usize,
+    name: String,
     save_res: &mut Save,
     pending: &mut PendingSpawn,
     game_state: &mut NextState<GameState>,
 ) {
     let fresh = Save {
         slot,
+        name,
         room: START_MAP.to_string(),
         ..default()
     };
@@ -246,13 +268,36 @@ fn start_new_game(
     game_state.set(GameState::Loading);
 }
 
+/// Draw the name-entry screen, showing the name typed so far with a cursor.
+fn draw_name_entry(
+    commands: &mut Commands,
+    menu: &Query<Entity, With<MenuEntity>>,
+    camera: &Query<&Transform, With<Camera2d>>,
+    name: &str,
+) {
+    for entity in menu.iter() {
+        commands.entity(entity).despawn();
+    }
+    draw_menu(
+        commands,
+        camera_center(camera),
+        "NAME YOUR SAVE",
+        &[
+            format!("{name}_"),
+            "[Enter] start    [Esc] back".to_string(),
+        ],
+    );
+}
+
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn main_menu_update(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     gamepads: Query<&Gamepad>,
+    mut typed: MessageReader<KeyboardInput>,
     mut cursor: ResMut<MenuCursor>,
     mut screen: ResMut<MenuScreen>,
+    mut name_buf: ResMut<NewGameName>,
     rows: Query<(&MenuItem, &mut TextColor)>,
     menu: Query<Entity, With<MenuEntity>>,
     camera: Query<&Transform, With<Camera2d>>,
@@ -262,6 +307,54 @@ fn main_menu_update(
     mut exit: MessageWriter<AppExit>,
     #[cfg(debug_assertions)] mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
+    // Always drain typed keys so none are stale when name entry begins.
+    let events: Vec<KeyboardInput> = typed.read().cloned().collect();
+
+    // The name-entry screen captures the keyboard; navigation is suspended.
+    if let MenuScreen::NameEntry(slot) = *screen {
+        let mut changed = false;
+        for ev in &events {
+            if ev.state != ButtonState::Pressed {
+                continue;
+            }
+            match &ev.logical_key {
+                Key::Enter => {
+                    let name = name_buf.0.trim().to_string();
+                    start_new_game(slot, name, &mut save_res, &mut pending, &mut game_state);
+                    return;
+                }
+                Key::Escape => {
+                    *screen = MenuScreen::NewSlots;
+                    cursor.0 = 0;
+                    redraw_main(&mut commands, &menu, *screen, &camera);
+                    return;
+                }
+                Key::Backspace => {
+                    name_buf.0.pop();
+                    changed = true;
+                }
+                Key::Space if name_buf.0.len() < NAME_MAX => {
+                    name_buf.0.push(' ');
+                    changed = true;
+                }
+                Key::Character(s) => {
+                    for c in s.chars() {
+                        // Keep it printable, and RON-safe (no quote/backslash).
+                        if !c.is_control() && c != '"' && c != '\\' && name_buf.0.len() < NAME_MAX {
+                            name_buf.0.push(c);
+                            changed = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if changed {
+            draw_name_entry(&mut commands, &menu, &camera, &name_buf.0);
+        }
+        return;
+    }
+
     let items = main_menu_items(*screen);
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
@@ -298,7 +391,10 @@ fn main_menu_update(
                     cursor.0 = 1; // default to the safe "Back" option
                     redraw_main(&mut commands, &menu, *screen, &camera);
                 } else {
-                    start_new_game(slot, &mut save_res, &mut pending, &mut game_state);
+                    // Empty slot — name the new game, then start.
+                    *screen = MenuScreen::NameEntry(slot);
+                    name_buf.0.clear();
+                    draw_name_entry(&mut commands, &menu, &camera, &name_buf.0);
                 }
             }
             MenuScreen::LoadSlots => {
@@ -321,7 +417,10 @@ fn main_menu_update(
         },
         MenuAction::ConfirmNew => {
             if let MenuScreen::ConfirmNew(slot) = *screen {
-                start_new_game(slot, &mut save_res, &mut pending, &mut game_state);
+                // Confirmed the overwrite — name the new game, then start.
+                *screen = MenuScreen::NameEntry(slot);
+                name_buf.0.clear();
+                draw_name_entry(&mut commands, &menu, &camera, &name_buf.0);
             }
         }
         MenuAction::Quit => {
@@ -332,16 +431,19 @@ fn main_menu_update(
             game_state.set(GameState::Loading); // load assets, then `editor` jumps in
             start_in_editor.0 = true;
         }
-        MenuAction::Continue => {}
+        // Only produced by the pause menu, handled in `pause_menu_update`.
+        MenuAction::Continue | MenuAction::MainMenu => {}
     }
 }
 
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn pause_menu_update(
     keys: Res<ButtonInput<KeyCode>>,
     gamepads: Query<&Gamepad>,
     mut cursor: ResMut<MenuCursor>,
     rows: Query<(&MenuItem, &mut TextColor)>,
     mut next: ResMut<NextState<Paused>>,
+    mut game_state: ResMut<NextState<GameState>>,
     mut exit: MessageWriter<AppExit>,
     #[cfg(debug_assertions)] mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
@@ -355,6 +457,11 @@ fn pause_menu_update(
         Some(MenuAction::OpenEditor) => {
             next.set(Paused::Running); // resume, then `editor` jumps in
             start_in_editor.0 = true;
+        }
+        Some(MenuAction::MainMenu) => {
+            // Resume (so pause systems stop) and drop back to the title screen.
+            next.set(Paused::Running);
+            game_state.set(GameState::MainMenu);
         }
         Some(MenuAction::Quit) => {
             exit.write(AppExit::Success);
