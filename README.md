@@ -186,6 +186,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Fixed the level builder's **room manager** (`M`): the tile and
+  room views are now separate `EditorView` *states* instead of a plain resource,
+  so switching no longer ran both input systems on the same frame and bounced the
+  `M` toggle straight back (which left the tile view up and eating the arrow keys).
 - **2026-06-25** — Added **teleporter pads**: a room can declare
   `teleports: [(glyph, to)]` to link to a distant room, stepping onto a pad warps
   the player to the partner room's pad (a shared glyph + mutual `to` makes it

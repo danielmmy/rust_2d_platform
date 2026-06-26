@@ -52,8 +52,11 @@ const VIEW_ROWS: i32 = 5;
 const GRID_W: f32 = 840.0;
 const GRID_H: f32 = 372.0;
 
-/// Which builder view is showing.
-#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+/// Which builder view is showing. A proper state (not a plain resource) so the
+/// `run_if` conditions read the *applied* value: switching it mid-frame can't make
+/// both `edit_tiles` and `edit_rooms` run on the same frame (which would let the
+/// shared `M` toggle bounce straight back).
+#[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum EditorView {
     #[default]
     Tiles,
@@ -103,7 +106,7 @@ impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EditBuffer>()
             .init_resource::<RoomMap>()
-            .init_resource::<EditorView>()
+            .init_state::<EditorView>()
             .init_resource::<StartInEditor>()
             .add_systems(
                 Update,
@@ -117,21 +120,15 @@ impl Plugin for EditorPlugin {
             .add_systems(OnExit(GameState::Editor), close_editor)
             .add_systems(
                 Update,
-                edit_tiles.run_if(in_state(GameState::Editor).and_then(in_tiles)),
+                edit_tiles
+                    .run_if(in_state(GameState::Editor).and_then(in_state(EditorView::Tiles))),
             )
             .add_systems(
                 Update,
-                edit_rooms.run_if(in_state(GameState::Editor).and_then(in_rooms)),
+                edit_rooms
+                    .run_if(in_state(GameState::Editor).and_then(in_state(EditorView::Rooms))),
             );
     }
-}
-
-fn in_tiles(view: Res<EditorView>) -> bool {
-    matches!(*view, EditorView::Tiles)
-}
-
-fn in_rooms(view: Res<EditorView>) -> bool {
-    matches!(*view, EditorView::Rooms)
 }
 
 fn enter_editor(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<GameState>>) {
@@ -150,7 +147,6 @@ fn launch_from_menu(mut flag: ResMut<StartInEditor>, mut next: ResMut<NextState<
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn open_editor(
     mut buffer: ResMut<EditBuffer>,
-    mut view: ResMut<EditorView>,
     mut room: ResMut<RoomMap>,
     mut commands: Commands,
     current: Res<CurrentRoom>,
@@ -164,7 +160,8 @@ fn open_editor(
     } else {
         current.name.clone()
     };
-    *view = EditorView::Tiles;
+    // `EditorView` is always `Tiles` on entry (it's only ever exited from the tile
+    // view), so there's nothing to reset here.
     *room = RoomMap::default();
     if let Some((gx, gy)) = parse_pos(&name) {
         room.gx = gx;
@@ -194,7 +191,7 @@ fn edit_tiles(
     mut typed: MessageReader<KeyboardInput>,
     mut commands: Commands,
     mut buffer: ResMut<EditBuffer>,
-    mut view: ResMut<EditorView>,
+    mut next_view: ResMut<NextState<EditorView>>,
     mut game_assets: ResMut<GameAssets>,
     mut map_assets: ResMut<Assets<MapData>>,
     mut current: ResMut<CurrentRoom>,
@@ -236,7 +233,7 @@ fn edit_tiles(
         return;
     }
     if keys.just_pressed(KeyCode::KeyM) {
-        *view = EditorView::Rooms;
+        next_view.set(EditorView::Rooms);
         redraw(&mut commands, &overlay);
         draw_room_map(&mut commands, center, &game_assets, &map_assets, &room);
         return;
@@ -449,7 +446,7 @@ fn draw_tiles(
 fn edit_rooms(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
-    mut view: ResMut<EditorView>,
+    mut next_view: ResMut<NextState<EditorView>>,
     mut room: ResMut<RoomMap>,
     mut buffer: ResMut<EditBuffer>,
     mut game_assets: ResMut<GameAssets>,
@@ -464,7 +461,7 @@ fn edit_rooms(
     if keys.just_pressed(KeyCode::KeyM)
         || (keys.just_pressed(KeyCode::Escape) && room.grab.is_none())
     {
-        *view = EditorView::Tiles;
+        next_view.set(EditorView::Tiles);
         let name = buffer.name.clone();
         *buffer = load_buffer(&name, &game_assets, &map_assets);
         redraw(&mut commands, &overlay);
@@ -516,7 +513,7 @@ fn edit_rooms(
     // Edit the selected room.
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
         if occupied {
-            *view = EditorView::Tiles;
+            next_view.set(EditorView::Tiles);
             *buffer = load_buffer(&name_at(here), &game_assets, &map_assets);
             redraw(&mut commands, &overlay);
             draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
