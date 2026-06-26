@@ -10,6 +10,8 @@
 //! enemy drops an **energy orb**; walking over it adds to [`Energy`] (shown on the
 //! HUD).
 
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use crate::GameSet;
@@ -231,6 +233,9 @@ fn collect_energy(
 const SWING_COOLDOWN: f32 = 0.26;
 /// Extra time after the cooldown during which a press continues the combo.
 const COMBO_GRACE: f32 = 0.40;
+/// How long the hitbox stays live after a swing — checked every frame (each enemy
+/// hit at most once per swing), so the strike connects even if the enemy is moving.
+const SWING_ACTIVE: f32 = 0.12;
 /// How far in front of the player the hitbox centre sits, and its half-extents.
 /// Deliberately generous (a wide arc, à la Silksong's nail) so swings feel forgiving.
 const HIT_REACH: f32 = 24.0;
@@ -239,12 +244,16 @@ const SWORD_DAMAGE: i32 = 1;
 /// How long a slash sprite lingers.
 const SLASH_TIME: f32 = 0.12;
 
-/// The player's sword state: which combo step (0 = idle, 1..=3) and its timers.
+/// The player's sword state: combo step (0 = idle, 1..=3), its timers, and — while a
+/// swing is live — its direction and which enemies it has already hit.
 #[derive(Resource, Default)]
 struct Sword {
     step: u8,
     cooldown: f32,
     combo_window: f32,
+    active: f32,
+    dir: f32,
+    hit: HashSet<Entity>,
 }
 
 /// A short-lived slash effect sprite.
@@ -258,60 +267,73 @@ fn player_attack(
     mut sword: ResMut<Sword>,
     mut commands: Commands,
     player: Query<(&Transform, &Sprite), With<Player>>,
-    mut enemies: Query<(&Transform, &mut Enemy), Without<Player>>,
+    mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Player>>,
 ) {
     let dt = time.delta_secs();
     sword.cooldown = (sword.cooldown - dt).max(0.0);
     sword.combo_window = (sword.combo_window - dt).max(0.0);
+    sword.active = (sword.active - dt).max(0.0);
     if sword.combo_window <= 0.0 {
         sword.step = 0; // window lapsed → combo resets
     }
 
-    if !intent.attack_pressed || sword.cooldown > 0.0 {
-        return;
-    }
     let Ok((player_tf, sprite)) = player.single() else {
         return;
     };
-
-    // Advance (or restart) the combo and re-arm the timers.
-    sword.step = if sword.combo_window > 0.0 && sword.step < 3 {
-        sword.step + 1
-    } else {
-        1
-    };
-    sword.cooldown = SWING_COOLDOWN;
-    sword.combo_window = SWING_COOLDOWN + COMBO_GRACE;
-
-    let facing = if sprite.flip_x { -1.0 } else { 1.0 };
     let player_pos = player_tf.translation.truncate();
-    let hit_center = player_pos + Vec2::new(facing * HIT_REACH, 0.0);
 
-    for (enemy_tf, mut enemy) in &mut enemies {
-        let delta = (enemy_tf.translation.truncate() - hit_center).abs();
-        if delta.x < HIT_HALF.x + ENEMY_HALF.x && delta.y < HIT_HALF.y + ENEMY_HALF.y {
-            enemy.health -= SWORD_DAMAGE;
-        }
+    // Start a swing on press (when off cooldown): advance the combo, re-arm timers,
+    // open the hitbox window, lock its direction, and flash a slash.
+    if intent.attack_pressed && sword.cooldown <= 0.0 {
+        sword.step = if sword.combo_window > 0.0 && sword.step < 3 {
+            sword.step + 1
+        } else {
+            1
+        };
+        sword.cooldown = SWING_COOLDOWN;
+        sword.combo_window = SWING_COOLDOWN + COMBO_GRACE;
+        sword.active = SWING_ACTIVE;
+        sword.dir = if sprite.flip_x { -1.0 } else { 1.0 };
+        sword.hit.clear();
+
+        // Slash visual — roughly matches the hitbox; bigger and gold on the finisher.
+        let (size, color) = match sword.step {
+            3 => (Vec2::new(58.0, 58.0), Color::srgb(1.0, 0.85, 0.4)),
+            2 => (Vec2::new(52.0, 52.0), Color::srgb(0.85, 0.95, 1.0)),
+            _ => (Vec2::new(46.0, 48.0), Color::srgb(0.6, 0.9, 1.0)),
+        };
+        commands.spawn((
+            MapEntity,
+            Slash(SLASH_TIME),
+            Sprite {
+                image: assets.slash.clone(),
+                custom_size: Some(size),
+                color,
+                flip_x: sword.dir < 0.0,
+                ..default()
+            },
+            Transform::from_xyz(player_pos.x + sword.dir * HIT_REACH, player_pos.y, 11.0),
+        ));
     }
 
-    // Slash visual — roughly matches the hitbox; bigger and gold on the finisher.
-    let (size, color) = match sword.step {
-        3 => (Vec2::new(58.0, 58.0), Color::srgb(1.0, 0.85, 0.4)),
-        2 => (Vec2::new(52.0, 52.0), Color::srgb(0.85, 0.95, 1.0)),
-        _ => (Vec2::new(46.0, 48.0), Color::srgb(0.6, 0.9, 1.0)),
-    };
-    commands.spawn((
-        MapEntity,
-        Slash(SLASH_TIME),
-        Sprite {
-            image: assets.slash.clone(),
-            custom_size: Some(size),
-            color,
-            flip_x: facing < 0.0,
-            ..default()
-        },
-        Transform::from_xyz(hit_center.x, player_pos.y, 11.0),
-    ));
+    // While the swing is live, damage enemies in the arc — once each per swing.
+    if sword.active > 0.0 {
+        let hit_center = player_pos + Vec2::new(sword.dir * HIT_REACH, 0.0);
+        for (entity, enemy_tf, mut enemy) in &mut enemies {
+            if sword.hit.contains(&entity) {
+                continue;
+            }
+            let delta = (enemy_tf.translation.truncate() - hit_center).abs();
+            if delta.x < HIT_HALF.x + ENEMY_HALF.x && delta.y < HIT_HALF.y + ENEMY_HALF.y {
+                enemy.health -= SWORD_DAMAGE;
+                sword.hit.insert(entity);
+                info!(
+                    "hit enemy kind {} for {} ({} hp left)",
+                    enemy.kind, SWORD_DAMAGE, enemy.health
+                );
+            }
+        }
+    }
 }
 
 fn fade_slashes(time: Res<Time>, mut commands: Commands, mut slashes: Query<(Entity, &mut Slash)>) {

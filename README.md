@@ -266,6 +266,12 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Sword hits now register reliably: the strike's hitbox stays **live
+  for a short window** (`SWING_ACTIVE`) and is re-checked every frame, hitting each
+  enemy at most once per swing. Previously the box was tested on the single press
+  frame, so moving enemies could slip through and a swing felt like it whiffed. Enemy
+  HP is unchanged (the 3-HP purple still dies to one full 3-hit combo) and tunable via
+  `combat::ENEMY_KINDS[*].health`.
 - **2026-06-26** — Enemy **kinds** now fully encapsulate behaviour and looks: each
   carries its **AI** (patrol, or **chase** within an aggro range — the red one
   hunts you) and its **sprite sheet + animation** (gridded and played via `anim`),
