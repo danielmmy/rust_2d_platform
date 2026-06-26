@@ -1,16 +1,48 @@
-//! A tiny three-slot save system.
+//! A tiny ten-slot save system.
 //!
 //! A save records the room to resume in and the last **bench** (the checkpoint you
-//! return to on death). Files live under `saves/` as RON, read and written with our
-//! own [`crate::ron`] reader — no extra dependency. The title screen picks a slot
-//! for a New Game and lists slots to Load.
+//! return to on death), plus its [`GameMode`] (Story or Builder). Files live under
+//! `saves/` as RON, read and written with our own [`crate::ron`] reader — no extra
+//! dependency. The title screen picks a slot for a New Game and lists slots to Load.
 
 use bevy::prelude::*;
 
 use crate::ron;
 
 /// Number of save slots offered on the title screen.
-pub const SLOTS: usize = 3;
+pub const SLOTS: usize = 10;
+
+/// Which mode a save plays in.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum GameMode {
+    /// The shipped campaign — read-only `assets/maps/` levels.
+    #[default]
+    Story,
+    /// A sandbox started from a copy of the shipped levels, editable in-game.
+    Builder,
+}
+
+impl GameMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            GameMode::Story => "story",
+            GameMode::Builder => "builder",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            "builder" => GameMode::Builder,
+            _ => GameMode::Story,
+        }
+    }
+    /// A short label for the slot picker.
+    pub fn tag(self) -> &'static str {
+        match self {
+            GameMode::Story => "Story",
+            GameMode::Builder => "Builder",
+        }
+    }
+}
 
 /// The active game's persisted state. `bench_room` empty means no bench has been
 /// rested at yet, so death returns the player to the start room.
@@ -21,6 +53,8 @@ pub const SLOTS: usize = 3;
 #[derive(Resource, Default, Clone)]
 pub struct Save {
     pub slot: usize,
+    /// Story (shipped levels) or Builder (an editable copy).
+    pub mode: GameMode,
     /// Player-chosen name for the save (shown in the slot picker; may be empty).
     pub name: String,
     pub room: String,
@@ -50,9 +84,10 @@ fn slot_path(slot: usize) -> String {
 impl Save {
     fn to_ron(&self) -> String {
         format!(
-            "(name: \"{}\", room: \"{}\", bench_room: \"{}\", bench_col: {}, bench_row: {}, \
-             energy: {}, vitality: {}, strength: {}, poise: {}, \
+            "(mode: \"{}\", name: \"{}\", room: \"{}\", bench_room: \"{}\", bench_col: {}, \
+             bench_row: {}, energy: {}, vitality: {}, strength: {}, poise: {}, \
              lost_amount: {}, lost_room: \"{}\", lost_x: {}, lost_y: {})\n",
+            self.mode.as_str(),
             self.name,
             self.room,
             self.bench_room,
@@ -93,6 +128,7 @@ impl Save {
         };
         Some(Save {
             slot,
+            mode: GameMode::parse(&opt_str("mode")),
             name: opt_str("name"),
             room: value.field("room").ok()?.as_str().ok()?.to_string(),
             bench_room: opt_str("bench_room"),
@@ -135,6 +171,7 @@ mod tests {
     fn save_round_trips_through_ron() {
         let save = Save {
             slot: 2,
+            mode: GameMode::Builder,
             name: "Wisp".to_string(),
             room: "r1_0".to_string(),
             bench_room: "r1_0".to_string(),
@@ -150,6 +187,7 @@ mod tests {
             lost_y: -64.0,
         };
         let parsed = Save::from_ron(2, &save.to_ron()).expect("parse");
+        assert_eq!(parsed.mode, GameMode::Builder);
         assert_eq!(parsed.name, "Wisp");
         assert_eq!(parsed.room, "r1_0");
         assert_eq!(parsed.bench_room, "r1_0");
@@ -175,5 +213,6 @@ mod tests {
         };
         let parsed = Save::from_ron(0, &save.to_ron()).expect("parse");
         assert!(!parsed.has_bench());
+        assert_eq!(parsed.mode, GameMode::Story); // default mode
     }
 }

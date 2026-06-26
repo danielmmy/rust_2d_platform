@@ -9,7 +9,6 @@
 mod anim;
 mod camera;
 mod combat;
-#[cfg(debug_assertions)]
 mod editor;
 mod hazards;
 mod health;
@@ -91,11 +90,9 @@ fn main() {
         camera::CameraPlugin,
         worldmap::WorldMapPlugin,
         menu::MenuPlugin,
+        // The level builder is reachable from Builder saves (any build).
+        editor::EditorPlugin,
     ));
-
-    // The level builder ships only in debug builds (e.g. `make game-run`).
-    #[cfg(debug_assertions)]
-    app.add_plugins(editor::EditorPlugin);
 
     app.run();
 }

@@ -8,7 +8,8 @@
     east: "r1_1",
     west: "",
     teleports: [
-        (origin_col: 7, origin_row: 17, to: "r0_0", dest_col: 16, dest_row: 20),
+    ],
+    enemies: [
     ],
     bg: [0.16, 0.32, 0.16],
     tiles: [

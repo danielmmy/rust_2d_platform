@@ -1,6 +1,7 @@
-//! A dev-only level builder (compiled only in debug builds — see `main.rs`).
+//! The level builder, available in **Builder** saves (see [`crate::save::GameMode`]).
 //!
-//! Press `F2` while playing to open it. The builder has two views:
+//! Open it from the pause menu's **Edit Levels** entry or with `F2` while playing.
+//! The builder has two views:
 //!
 //! - **Tiles** — paint the current room with the game's own sprites, resize it
 //!   freely, recolour it, and save.
@@ -10,8 +11,9 @@
 //! The room grid is **unbounded** (the room view scrolls). Connectivity is derived
 //! from the grid: rooms named `r{col}_{row}` are linked to their existing
 //! orthogonal neighbours automatically, so there are no link controls to fiddle
-//! with. Structural changes rewrite the affected `.map.ron` files and update the
-//! running game; `Esc` from Tiles leaves the builder.
+//! with. Structural changes rewrite the affected `.map.ron` files **in the active
+//! save's level directory** ([`LevelRoot`]) and update the running game; `Esc` from
+//! Tiles leaves the builder. Story saves never reach this module.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -21,10 +23,11 @@ use bevy::prelude::*;
 
 use crate::hazards::RockSprite;
 use crate::menu::Paused;
+use crate::save::{GameMode, Save};
 use crate::state::GameState;
 use crate::world::{
-    BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, EnemySpawn, GameAssets, MapData, START_MARKER, Teleport,
-    map_fs_path,
+    BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, EnemySpawn, GameAssets, LevelRoot, MapData,
+    START_MARKER, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -108,7 +111,7 @@ struct RoomMap {
     status: String,
 }
 
-/// Set by the menu's "Level Builder" entry; consumed once we're in `Playing`.
+/// Set by the pause menu's "Edit Levels" entry; consumed once we're in `Playing`.
 #[derive(Resource, Default)]
 pub(crate) struct StartInEditor(pub bool);
 
@@ -154,8 +157,13 @@ impl Plugin for EditorPlugin {
     }
 }
 
-fn enter_editor(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<GameState>>) {
-    if keys.just_pressed(KeyCode::F2) {
+fn enter_editor(
+    keys: Res<ButtonInput<KeyCode>>,
+    save: Res<Save>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    // The builder only exists for Builder saves; Story plays the shipped levels.
+    if save.mode == GameMode::Builder && keys.just_pressed(KeyCode::F2) {
         next.set(GameState::Editor);
     }
 }
@@ -226,10 +234,12 @@ fn edit_tiles(
     mut next: ResMut<NextState<GameState>>,
     mut room: ResMut<RoomMap>,
     mut pending: ResMut<PendingLink>,
+    level_root: Res<LevelRoot>,
     rock: Res<RockSprite>,
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<EditorEntity>>,
 ) {
+    let root = level_root.0.clone();
     let center = camera_center(&camera);
     // Always drain typed keys (so none are stale when rename mode begins).
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
@@ -240,7 +250,7 @@ fn edit_tiles(
             Typing::Confirm => {
                 buffer.display = text.trim().to_string();
                 buffer.rename = None;
-                buffer.status = save_tiles(&buffer, &mut game_assets, &mut map_assets);
+                buffer.status = save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
             }
             Typing::Cancel => buffer.rename = None,
             Typing::Continue => buffer.rename = Some(text),
@@ -289,6 +299,7 @@ fn edit_tiles(
             }
             pending.0 = None;
             buffer.status = link_portal(
+                &root,
                 &from_room,
                 from_cell,
                 &mut buffer,
@@ -350,7 +361,7 @@ fn edit_tiles(
             // through the room manager — `link_portal` writes the endpoint into the
             // saved room), then remember this endpoint and open the manager to pick
             // where the other side goes.
-            save_tiles(&buffer, &mut game_assets, &mut map_assets);
+            save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
             pending.0 = Some((buffer.name.clone(), (c, r)));
             if let Some((gx, gy)) = parse_pos(&buffer.name) {
                 room.gx = gx;
@@ -408,7 +419,7 @@ fn edit_tiles(
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyS) {
-        buffer.status = save_tiles(&buffer, &mut game_assets, &mut map_assets);
+        buffer.status = save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
         changed = true;
     }
 
@@ -569,10 +580,12 @@ fn edit_rooms(
     mut game_assets: ResMut<GameAssets>,
     mut map_assets: ResMut<Assets<MapData>>,
     mut pending: ResMut<PendingLink>,
+    level_root: Res<LevelRoot>,
     rock: Res<RockSprite>,
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<EditorEntity>>,
 ) {
+    let root = level_root.0.clone();
     let center = camera_center(&camera);
 
     // Choosing a portal's destination room: a focused mode with no other room ops.
@@ -662,7 +675,13 @@ fn edit_rooms(
             Some(from) => {
                 let dest = (room.gx, room.gy);
                 if dest != from {
-                    status = Some(swap_rooms(from, dest, &mut game_assets, &mut map_assets));
+                    status = Some(swap_rooms(
+                        &root,
+                        from,
+                        dest,
+                        &mut game_assets,
+                        &mut map_assets,
+                    ));
                 }
                 room.grab = None;
             }
@@ -686,11 +705,11 @@ fn edit_rooms(
 
     // Add / delete.
     if keys.just_pressed(KeyCode::KeyA) && !occupied {
-        status = Some(add_room(here, &mut game_assets, &mut map_assets));
+        status = Some(add_room(&root, here, &mut game_assets, &mut map_assets));
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyD) && occupied {
-        status = Some(delete_room(here, &mut game_assets, &mut map_assets));
+        status = Some(delete_room(&root, here, &mut game_assets, &mut map_assets));
         room.grab = None;
         changed = true;
     }
@@ -700,6 +719,7 @@ fn edit_rooms(
         if room.confirm_reset {
             room.confirm_reset = false;
             status = Some(apply_world(
+                &root,
                 default_rooms(),
                 &mut game_assets,
                 &mut map_assets,
@@ -819,23 +839,34 @@ fn current_world(assets: &GameAssets, maps: &Assets<MapData>) -> BTreeMap<String
         .collect()
 }
 
-fn add_room(at: (i32, i32), assets: &mut GameAssets, maps: &mut Assets<MapData>) -> String {
+fn add_room(
+    root: &str,
+    at: (i32, i32),
+    assets: &mut GameAssets,
+    maps: &mut Assets<MapData>,
+) -> String {
     let mut world = current_world(assets, maps);
     world.insert(name_at(at), standard_blank(PALETTE[0]));
-    apply_world(world, assets, maps)
+    apply_world(root, world, assets, maps)
 }
 
-fn delete_room(at: (i32, i32), assets: &mut GameAssets, maps: &mut Assets<MapData>) -> String {
+fn delete_room(
+    root: &str,
+    at: (i32, i32),
+    assets: &mut GameAssets,
+    maps: &mut Assets<MapData>,
+) -> String {
     let mut world = current_world(assets, maps);
     if world.len() <= 1 {
         return "can't delete the last room".to_string();
     }
     world.remove(&name_at(at));
-    apply_world(world, assets, maps)
+    apply_world(root, world, assets, maps)
 }
 
 /// Move a room's contents to another cell, swapping if that cell is occupied.
 fn swap_rooms(
+    root: &str,
     from: (i32, i32),
     to: (i32, i32),
     assets: &mut GameAssets,
@@ -851,12 +882,13 @@ fn swap_rooms(
             world.insert(tname, from_map);
         }
     }
-    apply_world(world, assets, maps)
+    apply_world(root, world, assets, maps)
 }
 
 /// Relink every room from grid adjacency, then write all files and refresh the
 /// live assets (removing any rooms no longer present).
 fn apply_world(
+    root: &str,
     mut world: BTreeMap<String, MapData>,
     assets: &mut GameAssets,
     maps: &mut Assets<MapData>,
@@ -870,13 +902,13 @@ fn apply_world(
         .cloned()
         .collect();
     for name in removed {
-        let _ = std::fs::remove_file(map_fs_path(&name));
+        let _ = std::fs::remove_file(map_fs_path(root, &name));
         assets.maps.remove(&name);
     }
 
     let mut errors = 0;
     for (name, map) in &world {
-        if std::fs::write(map_fs_path(name), map.to_ron()).is_err() {
+        if std::fs::write(map_fs_path(root, name), map.to_ron()).is_err() {
             errors += 1;
             continue;
         }
@@ -943,9 +975,14 @@ fn cut_doors(map: &mut MapData) {
     map.tiles = grid.into_iter().map(|r| r.into_iter().collect()).collect();
 }
 
-fn save_tiles(buffer: &EditBuffer, assets: &mut GameAssets, maps: &mut Assets<MapData>) -> String {
+fn save_tiles(
+    root: &str,
+    buffer: &EditBuffer,
+    assets: &mut GameAssets,
+    maps: &mut Assets<MapData>,
+) -> String {
     let map = map_from_buffer(buffer);
-    if persist_map(&buffer.name, &map, assets, maps) {
+    if persist_map(root, &buffer.name, &map, assets, maps) {
         format!("saved {}", buffer.name)
     } else {
         "save failed".to_string()
@@ -955,12 +992,13 @@ fn save_tiles(buffer: &EditBuffer, assets: &mut GameAssets, maps: &mut Assets<Ma
 /// Write a room to disk and refresh its live asset (registering it if new), so the
 /// running game reflects the edit. Returns false only on a write error.
 fn persist_map(
+    root: &str,
     name: &str,
     map: &MapData,
     assets: &mut GameAssets,
     maps: &mut Assets<MapData>,
 ) -> bool {
-    if std::fs::write(map_fs_path(name), map.to_ron()).is_err() {
+    if std::fs::write(map_fs_path(root, name), map.to_ron()).is_err() {
         return false;
     }
     let id = assets.maps.get(name).map(Handle::id);
@@ -984,6 +1022,7 @@ fn clear_portal_origin(teleports: &mut Vec<Teleport>, col: i32, row: i32) {
 /// the destination (`buffer` at its cursor), each linking to the other's cell, then
 /// save both. The two rooms may be the same (a self-portal). Returns a status.
 fn link_portal(
+    root: &str,
     from_room: &str,
     from_cell: (usize, usize),
     buffer: &mut EditBuffer,
@@ -1013,7 +1052,7 @@ fn link_portal(
             dest_row: sr,
         });
         let map = map_from_buffer(buffer);
-        if !persist_map(&to_room, &map, assets, maps) {
+        if !persist_map(root, &to_room, &map, assets, maps) {
             return "portal save failed".to_string();
         }
         return format!("portal linked within {to_room}");
@@ -1033,7 +1072,7 @@ fn link_portal(
         dest_row: sr,
     });
     let dest_map = map_from_buffer(buffer);
-    if !persist_map(&to_room, &dest_map, assets, maps) {
+    if !persist_map(root, &to_room, &dest_map, assets, maps) {
         return "portal save failed (destination)".to_string();
     }
 
@@ -1045,7 +1084,7 @@ fn link_portal(
         dest_col: dc,
         dest_row: dr,
     });
-    if !persist_map(from_room, &source, assets, maps) {
+    if !persist_map(root, from_room, &source, assets, maps) {
         return "portal save failed (source)".to_string();
     }
 
@@ -1420,6 +1459,23 @@ fn camera_center(camera: &Query<&Transform, With<Camera2d>>) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Maintenance tool, **not** part of the normal suite: rewrite the shipped Story
+    /// campaign in `assets/maps/` back to the procedural default 12-room world (the
+    /// same one the builder's Reset produces). Run it explicitly with:
+    ///
+    /// ```text
+    /// cargo test reset_story_to_default -- --ignored
+    /// ```
+    #[test]
+    #[ignore = "writes assets/maps; run explicitly to reset the Story campaign"]
+    fn reset_story_to_default() {
+        use crate::world::SHIPPED_MAPS_DIR;
+        for (name, map) in &default_rooms() {
+            let path = map_fs_path(SHIPPED_MAPS_DIR, name);
+            std::fs::write(&path, map.to_ron()).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+        }
+    }
 
     /// The Reset generator must produce 12 internally-consistent rooms: links
     /// reference real rooms, and each room's doors match its links.

@@ -82,7 +82,7 @@ pub struct MapData {
 
 impl MapData {
     /// Build a map from RON text (see [`crate::ron`] for the supported subset).
-    fn from_ron(text: &str) -> Result<Self, RonError> {
+    pub(crate) fn from_ron(text: &str) -> Result<Self, RonError> {
         let value = ron::from_str(text)?;
 
         let optional_str = |name: &str| -> Result<String, RonError> {
@@ -171,7 +171,6 @@ impl MapData {
     }
 
     /// Serialise back to the `.map.ron` text our reader accepts (for the editor).
-    #[cfg(any(test, debug_assertions))]
     pub(crate) fn to_ron(&self) -> String {
         let rows: String = self
             .tiles
@@ -392,26 +391,53 @@ pub(crate) struct LoadMap {
 #[derive(Resource, Default)]
 struct TransitionCooldown(f32);
 
-/// Where room files live on disk. The working dir is the crate root (Bevy's
-/// asset root is the sibling `assets/`), so this matches the asset paths below.
-pub(crate) const MAPS_DIR: &str = "assets/maps";
+/// The shipped campaign's levels (the Story world, and the seed copied into a new
+/// Builder save). The working dir is the crate root, so `assets/` is a sibling.
+pub(crate) const SHIPPED_MAPS_DIR: &str = "assets/maps";
 pub(crate) const START_MAP: &str = "r0_0";
 
-/// Path the asset server loads a room from (relative to the `assets/` root).
-fn map_asset_path(name: &str) -> String {
-    format!("maps/{name}.map.ron")
+/// The directory the active save's rooms are read from and written to: the shipped
+/// folder for Story, or a per-slot copy for Builder (see [`builder_maps_dir`]).
+#[derive(Resource)]
+pub(crate) struct LevelRoot(pub(crate) String);
+
+impl Default for LevelRoot {
+    fn default() -> Self {
+        Self(SHIPPED_MAPS_DIR.to_string())
+    }
 }
 
-/// Filesystem path to a room's file (used by the test and the editor's writes).
-#[cfg(any(test, debug_assertions))]
-pub(crate) fn map_fs_path(name: &str) -> String {
-    format!("{MAPS_DIR}/{name}.map.ron")
+/// A Builder slot's private level directory.
+pub(crate) fn builder_maps_dir(slot: usize) -> String {
+    format!("saves/builder{slot}/maps")
 }
 
-/// Every `*.map.ron` in [`MAPS_DIR`], sorted. Dropping in a file adds a room, and
-/// the level builder can save new ones here.
-pub(crate) fn discover_rooms() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(MAPS_DIR)
+/// (Re)seed a Builder slot from the shipped levels and return its directory. Wipes
+/// any previous contents so "New Game" over an old slot starts clean.
+pub(crate) fn init_builder_world(slot: usize) -> String {
+    let dir = builder_maps_dir(slot);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(entries) = std::fs::read_dir(SHIPPED_MAPS_DIR) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().ends_with(".map.ron") {
+                let _ = std::fs::copy(entry.path(), format!("{dir}/{}", name.to_string_lossy()));
+            }
+        }
+    }
+    dir
+}
+
+/// Filesystem path to a room's file under a level root (editor writes, the test).
+pub(crate) fn map_fs_path(root: &str, name: &str) -> String {
+    format!("{root}/{name}.map.ron")
+}
+
+/// Every `*.map.ron` in `root`, sorted. Dropping in a file adds a room, and the
+/// level builder can save new ones here.
+pub(crate) fn discover_rooms(root: &str) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
         .into_iter()
         .flatten()
         .flatten()
@@ -446,7 +472,9 @@ impl Plugin for WorldPlugin {
             .init_resource::<RoomView>()
             .init_resource::<TeleportArmed>()
             .init_resource::<PendingSpawn>()
+            .init_resource::<LevelRoot>()
             .add_systems(Startup, load_assets)
+            .add_systems(OnEnter(GameState::Loading), load_world)
             .add_systems(Update, wait_for_load.run_if(in_state(GameState::Loading)))
             .add_systems(
                 OnEnter(GameState::Playing),
@@ -468,15 +496,11 @@ impl Plugin for WorldPlugin {
 }
 
 fn load_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let room_names = discover_rooms();
-    let maps = room_names
-        .iter()
-        .map(|name| (name.clone(), asset_server.load(map_asset_path(name))))
-        .collect();
-
+    // Sprites load via the asset server; rooms are read from disk per save (see
+    // `load_world`), so `maps`/`room_names` start empty here.
     commands.insert_resource(GameAssets {
-        maps,
-        room_names,
+        maps: HashMap::new(),
+        room_names: Vec::new(),
         tile: asset_server.load("sprites/tile.png"),
         player: asset_server.load("sprites/player.png"),
         spikes: asset_server.load("sprites/spikes.png"),
@@ -492,16 +516,37 @@ fn load_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(RockSprite(asset_server.load("sprites/rock.png")));
 }
 
+/// Read the active save's rooms (from [`LevelRoot`]) straight off disk into live
+/// `MapData` assets. Runs on entering `Loading`, so it always reflects the room
+/// directory the just-selected save points at (shipped, or a Builder slot's copy).
+fn load_world(
+    level_root: Res<LevelRoot>,
+    mut assets: ResMut<GameAssets>,
+    mut maps: ResMut<Assets<MapData>>,
+) {
+    assets.maps.clear();
+    assets.room_names.clear();
+    for name in discover_rooms(&level_root.0) {
+        let path = map_fs_path(&level_root.0, &name);
+        match std::fs::read_to_string(&path).map(|t| MapData::from_ron(&t)) {
+            Ok(Ok(map)) => {
+                let handle = maps.add(map);
+                assets.maps.insert(name.clone(), handle);
+                assets.room_names.push(name);
+            }
+            _ => warn!("could not load room '{name}' from {path}"),
+        }
+    }
+    assets.room_names.sort();
+}
+
 fn wait_for_load(
     assets: Res<GameAssets>,
     rock: Res<RockSprite>,
     asset_server: Res<AssetServer>,
     mut next: ResMut<NextState<GameState>>,
 ) {
-    let maps_ready = assets
-        .maps
-        .values()
-        .all(|h| asset_server.is_loaded_with_dependencies(h.id()));
+    // Rooms are loaded synchronously in `load_world`; here we only wait on sprites.
     let sprites_ready = asset_server.is_loaded_with_dependencies(assets.tile.id())
         && asset_server.is_loaded_with_dependencies(assets.player.id())
         && asset_server.is_loaded_with_dependencies(assets.spikes.id())
@@ -515,7 +560,7 @@ fn wait_for_load(
         && asset_server.is_loaded_with_dependencies(assets.slash.id())
         && asset_server.is_loaded_with_dependencies(rock.0.id());
 
-    if maps_ready && sprites_ready {
+    if sprites_ready {
         next.set(GameState::Playing);
     }
 }
@@ -973,7 +1018,7 @@ mod tests {
     /// name neighbours that actually exist.
     #[test]
     fn demo_maps_parse_and_interconnect() {
-        let names = discover_rooms();
+        let names = discover_rooms(SHIPPED_MAPS_DIR);
         assert!(
             names.len() >= 12,
             "expected at least the 12 demo rooms, found {}",
@@ -982,7 +1027,7 @@ mod tests {
 
         let mut maps = HashMap::new();
         for name in &names {
-            let path = map_fs_path(name);
+            let path = map_fs_path(SHIPPED_MAPS_DIR, name);
             let text =
                 std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
             let map = MapData::from_ron(&text).unwrap_or_else(|e| panic!("parsing {path}: {e}"));

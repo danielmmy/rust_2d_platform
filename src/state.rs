@@ -7,7 +7,6 @@ pub enum GameState {
     MainMenu,
     Loading,
     Playing,
-    /// The dev-only level builder (only ever entered in debug builds).
-    #[cfg(debug_assertions)]
+    /// The level builder, reached from a Builder save (see [`crate::editor`]).
     Editor,
 }

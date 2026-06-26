@@ -18,10 +18,13 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 
 use crate::combat::{Energy, LostEnergy};
-use crate::save::{self, SLOTS, Save};
+use crate::save::{self, GameMode, SLOTS, Save};
 use crate::state::GameState;
 use crate::stats::{Stats, character_lines};
-use crate::world::{PendingSpawn, START_MAP, SpawnRequest};
+use crate::world::{
+    LevelRoot, PendingSpawn, SHIPPED_MAPS_DIR, START_MAP, SpawnRequest, builder_maps_dir,
+    init_builder_world,
+};
 use crate::worldmap::MapView;
 
 /// Whether gameplay is paused. Gameplay runs only when `Running`.
@@ -43,8 +46,10 @@ enum MenuScreen {
     LoadSlots,
     /// Confirm overwriting an occupied slot with a new game (carries the slot).
     ConfirmNew(usize),
-    /// Type a name for the new game in this slot, then start.
-    NameEntry(usize),
+    /// Choose Story or Builder for the new game in this slot.
+    ModeSelect(usize),
+    /// Type a name for the new game in this slot/mode, then start.
+    NameEntry(usize, GameMode),
 }
 
 /// Which pause sub-screen is showing.
@@ -83,30 +88,26 @@ enum MenuAction {
     PickSlot(usize),
     /// Confirm erasing the occupied slot (held in the screen) and start fresh.
     ConfirmNew,
+    /// Choose the new game's mode (then name it).
+    PickMode(GameMode),
     Back,
     Continue,
     /// Open the pause menu's read-only character status sheet.
     Character,
+    /// Open the level builder (Builder saves only).
+    OpenEditor,
     /// Leave a paused game back to the title screen.
     MainMenu,
     Quit,
-    /// Jump into the level builder — only offered in debug builds.
-    #[cfg(debug_assertions)]
-    OpenEditor,
 }
 
 fn main_menu_items(screen: MenuScreen) -> Vec<(String, MenuAction)> {
     match screen {
-        MenuScreen::Main => {
-            let mut items = vec![
-                ("New Game".to_string(), MenuAction::NewGame),
-                ("Load Game".to_string(), MenuAction::LoadGame),
-            ];
-            #[cfg(debug_assertions)]
-            items.push(("Level Builder".to_string(), MenuAction::OpenEditor));
-            items.push(("Quit".to_string(), MenuAction::Quit));
-            items
-        }
+        MenuScreen::Main => vec![
+            ("New Game".to_string(), MenuAction::NewGame),
+            ("Load Game".to_string(), MenuAction::LoadGame),
+            ("Quit".to_string(), MenuAction::Quit),
+        ],
         MenuScreen::NewSlots | MenuScreen::LoadSlots => {
             let mut items: Vec<(String, MenuAction)> = (0..SLOTS)
                 .map(|i| (slot_label(i), MenuAction::PickSlot(i)))
@@ -121,29 +122,47 @@ fn main_menu_items(screen: MenuScreen) -> Vec<(String, MenuAction)> {
             ),
             ("Back".to_string(), MenuAction::Back),
         ],
+        MenuScreen::ModeSelect(_) => vec![
+            (
+                "Story  (play the shipped levels)".to_string(),
+                MenuAction::PickMode(GameMode::Story),
+            ),
+            (
+                "Builder  (start a copy you can edit)".to_string(),
+                MenuAction::PickMode(GameMode::Builder),
+            ),
+            ("Back".to_string(), MenuAction::Back),
+        ],
         // Drawn specially (it needs the live name buffer) — see `draw_name_entry`.
-        MenuScreen::NameEntry(_) => Vec::new(),
+        MenuScreen::NameEntry(..) => Vec::new(),
     }
 }
 
-/// A one-line summary of a save slot for the picker.
+/// A one-line summary of a save slot for the picker (with its mode tag).
 fn slot_label(slot: usize) -> String {
-    let detail = match save::read_slot(slot) {
-        Some(s) if !s.name.is_empty() => s.name,
-        Some(s) if s.has_bench() => format!("bench in {}", s.bench_room),
-        Some(_) => "new game".to_string(),
-        None => "empty".to_string(),
-    };
-    format!("Slot {} - {}", slot + 1, detail)
+    match save::read_slot(slot) {
+        Some(s) => {
+            let detail = if !s.name.is_empty() {
+                s.name
+            } else if s.has_bench() {
+                format!("bench in {}", s.bench_room)
+            } else {
+                "new game".to_string()
+            };
+            format!("Slot {} - [{}] {}", slot + 1, s.mode.tag(), detail)
+        }
+        None => format!("Slot {} - empty", slot + 1),
+    }
 }
 
-fn pause_menu_items() -> Vec<(String, MenuAction)> {
+fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
     let mut items = vec![
         ("Continue".to_string(), MenuAction::Continue),
         ("Character".to_string(), MenuAction::Character),
     ];
-    #[cfg(debug_assertions)]
-    items.push(("Level Builder".to_string(), MenuAction::OpenEditor));
+    if builder {
+        items.push(("Edit Levels".to_string(), MenuAction::OpenEditor));
+    }
     items.push(("Main Menu".to_string(), MenuAction::MainMenu));
     items.push(("Quit".to_string(), MenuAction::Quit));
     items
@@ -155,7 +174,8 @@ fn menu_title(screen: MenuScreen) -> &'static str {
         MenuScreen::NewSlots => "NEW GAME",
         MenuScreen::LoadSlots => "LOAD GAME",
         MenuScreen::ConfirmNew(_) => "OVERWRITE SAVE?",
-        MenuScreen::NameEntry(_) => "NAME YOUR SAVE",
+        MenuScreen::ModeSelect(_) => "CHOOSE MODE",
+        MenuScreen::NameEntry(..) => "NAME YOUR SAVE",
     }
 }
 
@@ -213,6 +233,7 @@ fn spawn_pause_menu(
     mut commands: Commands,
     mut cursor: ResMut<MenuCursor>,
     mut screen: ResMut<PauseScreen>,
+    save: Res<Save>,
     camera: Query<&Transform, With<Camera2d>>,
 ) {
     *screen = PauseScreen::Root; // always open on the root list
@@ -221,7 +242,7 @@ fn spawn_pause_menu(
         &mut commands,
         camera_center(&camera),
         "PAUSED",
-        &labels(&pause_menu_items()),
+        &labels(&pause_menu_items(save.mode == GameMode::Builder)),
     );
 }
 
@@ -268,16 +289,25 @@ fn redraw_main(
     );
 }
 
-/// Write a fresh, named save to `slot` (overwriting any existing one) and play.
+/// Write a fresh, named save to `slot` (overwriting any existing one) and play. A
+/// Builder game also seeds a private, editable copy of the shipped levels.
+#[allow(clippy::too_many_arguments)] // distinct resources threaded from the menu system
 fn start_new_game(
     slot: usize,
     name: String,
+    mode: GameMode,
     save_res: &mut Save,
     pending: &mut PendingSpawn,
+    level_root: &mut LevelRoot,
     game_state: &mut NextState<GameState>,
 ) {
+    level_root.0 = match mode {
+        GameMode::Story => SHIPPED_MAPS_DIR.to_string(),
+        GameMode::Builder => init_builder_world(slot),
+    };
     let fresh = Save {
         slot,
+        mode,
         name,
         room: START_MAP.to_string(),
         ..default()
@@ -326,15 +356,15 @@ fn main_menu_update(
     camera: Query<&Transform, With<Camera2d>>,
     mut save_res: ResMut<Save>,
     mut pending: ResMut<PendingSpawn>,
+    mut level_root: ResMut<LevelRoot>,
     mut game_state: ResMut<NextState<GameState>>,
     mut exit: MessageWriter<AppExit>,
-    #[cfg(debug_assertions)] mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
     // Always drain typed keys so none are stale when name entry begins.
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
 
     // The name-entry screen captures the keyboard; navigation is suspended.
-    if let MenuScreen::NameEntry(slot) = *screen {
+    if let MenuScreen::NameEntry(slot, mode) = *screen {
         let mut changed = false;
         for ev in &events {
             if ev.state != ButtonState::Pressed {
@@ -343,11 +373,19 @@ fn main_menu_update(
             match &ev.logical_key {
                 Key::Enter => {
                     let name = name_buf.0.trim().to_string();
-                    start_new_game(slot, name, &mut save_res, &mut pending, &mut game_state);
+                    start_new_game(
+                        slot,
+                        name,
+                        mode,
+                        &mut save_res,
+                        &mut pending,
+                        &mut level_root,
+                        &mut game_state,
+                    );
                     return;
                 }
                 Key::Escape => {
-                    *screen = MenuScreen::NewSlots;
+                    *screen = MenuScreen::ModeSelect(slot);
                     cursor.0 = 0;
                     redraw_main(&mut commands, &menu, *screen, &camera);
                     return;
@@ -398,9 +436,9 @@ fn main_menu_update(
             redraw_main(&mut commands, &menu, *screen, &camera);
         }
         MenuAction::Back => {
-            // From a confirm prompt, step back to slot selection; else to the top.
+            // Step back one level: mode-pick / overwrite-confirm → slots; else top.
             *screen = match *screen {
-                MenuScreen::ConfirmNew(_) => MenuScreen::NewSlots,
+                MenuScreen::ConfirmNew(_) | MenuScreen::ModeSelect(_) => MenuScreen::NewSlots,
                 _ => MenuScreen::Main,
             };
             cursor.0 = 0;
@@ -412,13 +450,12 @@ fn main_menu_update(
                     // Occupied — confirm before erasing it.
                     *screen = MenuScreen::ConfirmNew(slot);
                     cursor.0 = 1; // default to the safe "Back" option
-                    redraw_main(&mut commands, &menu, *screen, &camera);
                 } else {
-                    // Empty slot — name the new game, then start.
-                    *screen = MenuScreen::NameEntry(slot);
-                    name_buf.0.clear();
-                    draw_name_entry(&mut commands, &menu, &camera, &name_buf.0);
+                    // Empty slot — choose the mode next.
+                    *screen = MenuScreen::ModeSelect(slot);
+                    cursor.0 = 0;
                 }
+                redraw_main(&mut commands, &menu, *screen, &camera);
             }
             MenuScreen::LoadSlots => {
                 // Only act on a slot that actually has a save.
@@ -431,6 +468,11 @@ fn main_menu_update(
                     } else {
                         loaded.room.clone()
                     };
+                    // Point the level loader at this save's world.
+                    level_root.0 = match loaded.mode {
+                        GameMode::Story => SHIPPED_MAPS_DIR.to_string(),
+                        GameMode::Builder => builder_maps_dir(slot),
+                    };
                     pending.0 = Some(SpawnRequest { room, at_cell });
                     *save_res = loaded;
                     game_state.set(GameState::Loading);
@@ -440,8 +482,16 @@ fn main_menu_update(
         },
         MenuAction::ConfirmNew => {
             if let MenuScreen::ConfirmNew(slot) = *screen {
-                // Confirmed the overwrite — name the new game, then start.
-                *screen = MenuScreen::NameEntry(slot);
+                // Confirmed the overwrite — choose the mode next.
+                *screen = MenuScreen::ModeSelect(slot);
+                cursor.0 = 0;
+                redraw_main(&mut commands, &menu, *screen, &camera);
+            }
+        }
+        MenuAction::PickMode(mode) => {
+            if let MenuScreen::ModeSelect(slot) = *screen {
+                // Mode chosen — name the new game, then start.
+                *screen = MenuScreen::NameEntry(slot, mode);
                 name_buf.0.clear();
                 draw_name_entry(&mut commands, &menu, &camera, &name_buf.0);
             }
@@ -449,13 +499,11 @@ fn main_menu_update(
         MenuAction::Quit => {
             exit.write(AppExit::Success);
         }
-        #[cfg(debug_assertions)]
-        MenuAction::OpenEditor => {
-            game_state.set(GameState::Loading); // load assets, then `editor` jumps in
-            start_in_editor.0 = true;
-        }
         // Only produced by the pause menu, handled in `pause_menu_update`.
-        MenuAction::Continue | MenuAction::Character | MenuAction::MainMenu => {}
+        MenuAction::Continue
+        | MenuAction::Character
+        | MenuAction::OpenEditor
+        | MenuAction::MainMenu => {}
     }
 }
 
@@ -469,17 +517,19 @@ fn pause_menu_update(
     rows: Query<(&MenuItem, &mut TextColor)>,
     menu: Query<Entity, With<MenuEntity>>,
     camera: Query<&Transform, With<Camera2d>>,
+    save: Res<Save>,
     stats: Res<Stats>,
     energy: Res<Energy>,
     lost: Res<LostEnergy>,
     mut next: ResMut<NextState<Paused>>,
     mut game_state: ResMut<NextState<GameState>>,
     mut exit: MessageWriter<AppExit>,
-    #[cfg(debug_assertions)] mut start_in_editor: ResMut<crate::editor::StartInEditor>,
+    mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
+    let builder = save.mode == GameMode::Builder;
     // The Character sub-screen offers only "Back"; the root offers the full list.
     let items = match *screen {
-        PauseScreen::Root => pause_menu_items(),
+        PauseScreen::Root => pause_menu_items(builder),
         PauseScreen::Character => vec![("Back".to_string(), MenuAction::Back)],
     };
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
@@ -495,6 +545,7 @@ fn pause_menu_update(
                 &menu,
                 &camera,
                 *screen,
+                builder,
                 &stats,
                 &energy,
                 &lost,
@@ -508,12 +559,12 @@ fn pause_menu_update(
                 &menu,
                 &camera,
                 *screen,
+                builder,
                 &stats,
                 &energy,
                 &lost,
             );
         }
-        #[cfg(debug_assertions)]
         Some(MenuAction::OpenEditor) => {
             next.set(Paused::Running); // resume, then `editor` jumps in
             start_in_editor.0 = true;
@@ -537,6 +588,7 @@ fn redraw_pause(
     menu: &Query<Entity, With<MenuEntity>>,
     camera: &Query<&Transform, With<Camera2d>>,
     screen: PauseScreen,
+    builder: bool,
     stats: &Stats,
     energy: &Energy,
     lost: &LostEnergy,
@@ -546,7 +598,12 @@ fn redraw_pause(
     }
     let center = camera_center(camera);
     match screen {
-        PauseScreen::Root => draw_menu(commands, center, "PAUSED", &labels(&pause_menu_items())),
+        PauseScreen::Root => draw_menu(
+            commands,
+            center,
+            "PAUSED",
+            &labels(&pause_menu_items(builder)),
+        ),
         PauseScreen::Character => {
             draw_character_sheet(commands, center, &character_lines(stats, energy, lost));
         }
@@ -647,15 +704,24 @@ fn draw_menu(commands: &mut Commands, center: Vec2, title: &str, items: &[String
         },
         Transform::from_xyz(center.x, center.y, 200.0),
     ));
+    // Tighten the rows for long lists (the 10-slot picker) so they all fit; the
+    // list is centred and the title sits just above it.
+    let n = items.len();
+    let (font, step, title_font) = if n > 6 {
+        (22.0, 38.0, 34.0)
+    } else {
+        (32.0, 52.0, 44.0)
+    };
+    let top = (n.saturating_sub(1)) as f32 * step / 2.0;
     commands.spawn((
         MenuEntity,
         Text2d::new(title),
         TextFont {
-            font_size: FontSize::Px(46.0),
+            font_size: FontSize::Px(title_font),
             ..default()
         },
         TextColor(Color::srgb(0.95, 0.96, 1.0)),
-        Transform::from_xyz(center.x, center.y + 130.0, 201.0),
+        Transform::from_xyz(center.x, center.y + top + 48.0, 201.0),
     ));
     for (i, label) in items.iter().enumerate() {
         commands.spawn((
@@ -663,11 +729,11 @@ fn draw_menu(commands: &mut Commands, center: Vec2, title: &str, items: &[String
             MenuItem(i),
             Text2d::new(label.clone()),
             TextFont {
-                font_size: FontSize::Px(32.0),
+                font_size: FontSize::Px(font),
                 ..default()
             },
             TextColor(Color::srgb(0.62, 0.64, 0.72)),
-            Transform::from_xyz(center.x, center.y + 30.0 - i as f32 * 52.0, 201.0),
+            Transform::from_xyz(center.x, center.y + top - i as f32 * step, 201.0),
         ));
     }
 }

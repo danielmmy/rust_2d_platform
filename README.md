@@ -27,13 +27,20 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | Pause | `Esc` | `Select` |
 
 The game opens on a **main menu** (New Game / Load Game / Quit). **New Game** and
-**Load Game** open a **three-slot** picker — pick a slot to load, or to start fresh
-(overwriting a used slot asks first, then lets you **type a name** for the save).
+**Load Game** open a **ten-slot** picker (each labelled with its `[Story]` or
+`[Builder]` type) — pick a slot to load, or to start fresh. A new game asks you to
+**choose a mode**, then (after confirming any overwrite) **type a name** for the save:
+
+- **Story** plays the **shipped, read-only levels** — the designed campaign.
+- **Builder** starts from a **private, editable copy** of those levels; you can paint,
+  resize, add, delete, and relink rooms at will (see [Level builder](#level-builder)),
+  and your edits stay in that save only.
+
 During play, **`Esc`** (or `Select`) brings up a **pause menu** (Continue /
-**Character** / **Main Menu** / Quit); **Character** opens a read-only stat sheet
-sub-screen (the same one `C` shows). Menus are navigated with up/down and confirmed
-with jump / `Enter`. In **debug builds** both menus gain a **Level Builder** entry
-(see below).
+**Character** / **Edit Levels** / **Main Menu** / Quit); **Character** opens a
+read-only stat sheet sub-screen (the same one `C` shows), and **Edit Levels** (Builder
+saves only) opens the builder. Menus are navigated with up/down and confirmed with
+jump / `Enter`.
 
 Your **health** is a **bar** at the top-left that's **green when full and shades
 through yellow to red** as it drops (a continuous bar, so it reads cleanly however
@@ -134,17 +141,17 @@ The structure is plugin-per-concern:
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
 | [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`. |
 | [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player / portal / bench / enemy clips. |
-| [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches. |
+| [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches; loads each save's world from its [`LevelRoot`]. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
 | [`health`](src/health.rs) | Health (sized by Vitality), i-frames, the colour-graded health-bar HUD, death → bloodstain + last bench. |
 | [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, bloodstain recovery, the 3-hit sword combo. |
 | [`stats`](src/stats.rs) | Character stats (Vitality/Strength/Poise), the upgrade shop, and the character screen. |
-| [`save`](src/save.rs) | Three-slot save system (room + bench + progression), RON files under `saves/`. |
+| [`save`](src/save.rs) | Ten-slot save system (mode + room + bench + progression), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
-| [`menu`](src/menu.rs) | Main menu (slot picker) + pause menu (`Esc`); `MainMenu`/`Paused` states. |
-| [`editor`](src/editor.rs) | **Dev-only** level builder (`F2`): a tile view + a room-manager map. |
+| [`menu`](src/menu.rs) | Main menu (mode + slot picker) + pause menu (`Esc`); `MainMenu`/`Paused` states. |
+| [`editor`](src/editor.rs) | Level builder (`F2` / pause **Edit Levels**, Builder saves): a tile view + a room-manager map. |
 
 The crate's **only dependency is `bevy`** — the maps are `.map.ron` files read by
 our own [`ron`](src/ron.rs) parser (a small `AssetLoader` in [`world`](src/world.rs)
@@ -207,13 +214,13 @@ shaft/corridor positions.
 When a room is **smaller than the screen**, the camera zooms in so the room fills
 the viewport; larger rooms stay at 1:1 and scroll.
 
-### Level builder (debug builds only)
+### Level builder
 
-In a dev build (`make game-run` / `cargo run`), open the **level builder** with
-**`F2`** while playing — or pick **Level Builder** from the main or pause menu
-(both show that entry only in debug builds). It has two views; saving writes the
-`.map.ron` files and updates the running game, so leaving the builder shows your
-edits.
+In a **Builder** save, open the **level builder** with **`F2`** while playing — or
+pick **Edit Levels** from the pause menu. It has two views; saving writes the
+`.map.ron` files **in that save's own level directory** (`saves/builder<slot>/maps/`)
+and updates the running game, so leaving the builder shows your edits. Story saves
+never reach the builder — the shipped `assets/maps/` levels stay read-only.
 
 **Tiles** — paint the selected room with the game's own sprites:
 
@@ -294,6 +301,18 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Reset the shipped **Story campaign** (`assets/maps/`) to the clean
+  **default 12-room world** — the same one the builder's Reset generates — as a fresh
+  baseline to design on. Regenerate it any time with
+  `cargo test reset_story_to_default -- --ignored`.
+- **2026-06-26** — Added **Story / Builder game modes** and opened the level builder to
+  every player. New Game now asks which mode; **Story** plays the read-only shipped
+  `assets/maps/` campaign, while **Builder** seeds a **private editable copy** under
+  `saves/builder<slot>/maps/` that you can edit in-game (pause → **Edit Levels**, or
+  `F2`). Save **slots went 3 → 10**, each tagged `[Story]`/`[Builder]` in the picker.
+  Under the hood, rooms are now loaded straight from the active save's directory
+  (`world::LevelRoot`) on entering a game, instead of only the shipped folder at
+  startup — so each save edits its own world and the campaign stays pristine.
 - **2026-06-26** — **Letterboxed** the view so non-16:9 windows no longer **stretch**
   the picture: a `letterbox` system confines the camera's render viewport to the
   largest centred 16:9 rectangle that fits the window, with bars filling the rest. The
