@@ -17,10 +17,12 @@ use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 
 use crate::GameSet;
-use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
+use crate::hazards::{Hazard, RespawnPoint, Rock, RockSpawner, RockSprite, SPIKE_HALF};
+use crate::health::{Health, Hurt};
 use crate::physics::{Solids, TILE};
 use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
+use crate::save::{self, Save};
 use crate::state::GameState;
 
 /// A teleporter pad, stored as pure coordinates: stepping on the cell
@@ -217,7 +219,7 @@ impl AssetLoader for MapLoader {
 
 /// A cardinal direction of travel between rooms.
 #[derive(Clone, Copy)]
-enum Dir {
+pub(crate) enum Dir {
     North,
     South,
     East,
@@ -226,7 +228,7 @@ enum Dir {
 
 /// How the player should be placed when a room loads.
 #[derive(Clone)]
-enum Entry {
+pub(crate) enum Entry {
     /// The world's starting position (the `@` marker in the grid).
     Start,
     /// Arrived by walking off an edge; carries the direction travelled and the
@@ -235,6 +237,8 @@ enum Entry {
     /// Arrived through a teleporter; place the player at the destination cell
     /// `(col, row)` (grid coords, row 0 = top) recorded on the pad.
     Teleport(i32, i32),
+    /// Respawned/loaded onto a bench at cell `(col, row)` (grid coords).
+    Bench(i32, i32),
 }
 
 /// Tags every entity belonging to the current map (despawned on transition).
@@ -263,6 +267,45 @@ impl Default for TeleportArmed {
 
 /// Teleporter pad colour (a glowing square — no sprite asset needed).
 const TELEPORT_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
+
+/// Grid glyph marking a bench: a checkpoint that saves the game, refills hearts,
+/// resets enemies, and becomes the player's respawn point.
+pub(crate) const BENCH_GLYPH: char = 'B';
+/// Bench pad colour (a warm square — no sprite asset needed).
+const BENCH_COLOR: Color = Color::srgb(0.85, 0.62, 0.32);
+/// Half-extents of a bench's "rest" trigger area.
+const BENCH_HALF: Vec2 = Vec2::new(TILE * 0.5, TILE * 0.5);
+
+/// A spawned bench, carrying its own grid cell so resting can record it as the
+/// respawn point.
+#[derive(Component)]
+struct Bench {
+    col: i32,
+    row: i32,
+}
+
+/// Whether the player has stepped clear of every bench since last resting, so a
+/// bench rests once on contact rather than every frame.
+#[derive(Resource)]
+struct BenchReady(bool);
+
+impl Default for BenchReady {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// A menu-driven request for where to spawn when `Playing` next begins: the room,
+/// and an optional bench cell (else the room's start marker). Consumed by
+/// [`enter_playing`]; when unset, re-entering `Playing` (from the editor) just
+/// reloads the current room.
+#[derive(Resource, Default)]
+pub(crate) struct PendingSpawn(pub(crate) Option<SpawnRequest>);
+
+pub(crate) struct SpawnRequest {
+    pub(crate) room: String,
+    pub(crate) at_cell: Option<(i32, i32)>,
+}
 /// Half-extents of a teleporter's trigger area.
 const TELEPORT_HALF: Vec2 = Vec2::new(TILE * 0.45, TILE * 0.5);
 /// How far the player must move from a pad before it re-arms. Larger than the
@@ -301,9 +344,9 @@ pub(crate) struct RoomView {
 
 /// Request to (re)load a map and place the player.
 #[derive(Message, Clone)]
-struct LoadMap {
-    map: String,
-    entry: Entry,
+pub(crate) struct LoadMap {
+    pub(crate) map: String,
+    pub(crate) entry: Entry,
 }
 
 /// Brief window after a transition during which edges are ignored, so the player
@@ -314,7 +357,7 @@ struct TransitionCooldown(f32);
 /// Where room files live on disk. The working dir is the crate root (Bevy's
 /// asset root is the sibling `assets/`), so this matches the asset paths below.
 pub(crate) const MAPS_DIR: &str = "assets/maps";
-const START_MAP: &str = "r0_0";
+pub(crate) const START_MAP: &str = "r0_0";
 
 /// Path the asset server loads a room from (relative to the `assets/` root).
 fn map_asset_path(name: &str) -> String {
@@ -364,6 +407,8 @@ impl Plugin for WorldPlugin {
             .init_resource::<CurrentRoom>()
             .init_resource::<RoomView>()
             .init_resource::<TeleportArmed>()
+            .init_resource::<BenchReady>()
+            .init_resource::<PendingSpawn>()
             .add_systems(Startup, load_assets)
             .add_systems(Update, wait_for_load.run_if(in_state(GameState::Loading)))
             .add_systems(OnEnter(GameState::Playing), enter_playing)
@@ -374,6 +419,7 @@ impl Plugin for WorldPlugin {
                     tick_cooldown,
                     detect_transitions.in_set(GameSet::Transitions),
                     detect_teleport.in_set(GameSet::Transitions),
+                    rest_at_bench.in_set(GameSet::Transitions),
                 )
                     .run_if(in_state(GameState::Playing)),
             );
@@ -421,6 +467,8 @@ fn enter_playing(
     mut commands: Commands,
     assets: Res<GameAssets>,
     current: Res<CurrentRoom>,
+    mut pending: ResMut<PendingSpawn>,
+    mut health: ResMut<Health>,
     players: Query<(), With<Player>>,
     mut load: MessageWriter<LoadMap>,
 ) {
@@ -440,8 +488,24 @@ fn enter_playing(
         ));
     }
 
-    // Load the current room (reloading it after editing), falling back to the
-    // start room or any room if it's gone (the builder can delete/move rooms).
+    // A menu-driven New Game / Load Game requests a room (and maybe a bench cell);
+    // honour it and refill hearts. Otherwise we're returning from the editor — just
+    // reload the current room, falling back to the start (the builder can move rooms).
+    if let Some(req) = pending.0.take() {
+        health.current = health.max;
+        let entry = match req.at_cell {
+            Some((col, row)) => Entry::Bench(col, row),
+            None => Entry::Start,
+        };
+        let map = if assets.maps.contains_key(&req.room) {
+            req.room
+        } else {
+            START_MAP.to_string()
+        };
+        load.write(LoadMap { map, entry });
+        return;
+    }
+
     let map = if assets.maps.contains_key(&current.name) {
         current.name.clone()
     } else if assets.maps.contains_key(START_MAP) {
@@ -471,8 +535,8 @@ fn entry_position(entry: &Entry, room: Vec2, start: Vec2, teleport: Vec2) -> Vec
         Entry::FromEdge(Dir::North, _) => {
             Vec2::new((SHAFT_COL - 2.0) * TILE + TILE / 2.0, TILE * 2.0)
         }
-        // Teleported → land on the recorded destination cell.
-        Entry::Teleport(..) => teleport,
+        // Teleported / respawned at a bench → land on the recorded cell.
+        Entry::Teleport(..) | Entry::Bench(..) => teleport,
     }
 }
 
@@ -530,6 +594,17 @@ fn handle_load_map(
 
             if ch == START_MARKER {
                 start_pos = center;
+            } else if ch == BENCH_GLYPH {
+                commands.spawn((
+                    MapEntity,
+                    Bench { col, row: r as i32 },
+                    Sprite {
+                        color: BENCH_COLOR,
+                        custom_size: Some(Vec2::splat(TILE)),
+                        ..default()
+                    },
+                    Transform::from_xyz(center.x, center.y, 1.0),
+                ));
             } else if map.solid.contains(ch) {
                 solids.0.insert((col, row));
                 commands.spawn((
@@ -592,10 +667,12 @@ fn handle_load_map(
         }
     }
 
-    // Resolve a teleporter destination cell (grid coords, row 0 = top) to a world
-    // centre, flipping the row so y points up. Out-of-range falls back to `start`.
+    // Resolve a destination cell (teleporter or bench; grid coords, row 0 = top) to
+    // a world centre, flipping the row so y points up. Out-of-range falls to `start`.
     let teleport_pos = match load.entry {
-        Entry::Teleport(col, row) if (0..width).contains(&col) && (0..height).contains(&row) => {
+        Entry::Teleport(col, row) | Entry::Bench(col, row)
+            if (0..width).contains(&col) && (0..height).contains(&row) =>
+        {
             let world_row = height - 1 - row;
             Vec2::new(
                 col as f32 * TILE + TILE / 2.0,
@@ -642,11 +719,11 @@ fn tick_cooldown(time: Res<Time>, mut cooldown: ResMut<TransitionCooldown>) {
 fn detect_transitions(
     cooldown: Res<TransitionCooldown>,
     current: Res<CurrentRoom>,
-    respawn: Res<RespawnPoint>,
-    mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
+    player: Query<&Transform, With<Player>>,
     mut load: MessageWriter<LoadMap>,
+    mut hurt: MessageWriter<Hurt>,
 ) {
-    let Ok((mut transform, mut velocity)) = player.single_mut() else {
+    let Ok(transform) = player.single() else {
         return;
     };
     let pos = transform.translation.truncate();
@@ -674,11 +751,10 @@ fn detect_transitions(
         }
     }
 
-    // Fell into a bottomless pit (no room below): respawn at the room entrance.
+    // Fell into a bottomless pit (no room below): take a hit. The damage system
+    // respawns at the room entrance, or the last bench if it was the final heart.
     if pos.y < -TILE && current.south.is_none() {
-        transform.translation.x = respawn.0.x;
-        transform.translation.y = respawn.0.y;
-        velocity.0 = Vec2::ZERO;
+        hurt.write(Hurt);
     }
 }
 
@@ -718,6 +794,52 @@ fn detect_teleport(
             map: tp.to.clone(),
             entry: Entry::Teleport(tp.dest.0, tp.dest.1),
         });
+    }
+}
+
+/// Rest at a bench on contact: refill hearts, clear in-flight enemies, and record
+/// the bench as the save + respawn point (persisted to disk). Re-arms once the
+/// player steps clear, so it fires once per visit.
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
+fn rest_at_bench(
+    mut commands: Commands,
+    mut ready: ResMut<BenchReady>,
+    mut save: ResMut<Save>,
+    mut health: ResMut<Health>,
+    current: Res<CurrentRoom>,
+    benches: Query<(&Transform, &Bench)>,
+    rocks: Query<Entity, With<Rock>>,
+    player: Query<&Transform, With<Player>>,
+) {
+    let Ok(player_tf) = player.single() else {
+        return;
+    };
+    let player_pos = player_tf.translation.truncate();
+
+    let on_bench = benches.iter().find_map(|(tf, bench)| {
+        let delta = (tf.translation.truncate() - player_pos).abs();
+        let touching =
+            delta.x < BENCH_HALF.x + PLAYER_HALF.x && delta.y < BENCH_HALF.y + PLAYER_HALF.y;
+        touching.then_some((bench.col, bench.row))
+    });
+
+    match on_bench {
+        // Clear of every bench → ready to rest at the next one touched.
+        None => ready.0 = true,
+        // Touched a bench → rest: heal, checkpoint, save, and reset enemies.
+        Some((col, row)) if ready.0 => {
+            ready.0 = false;
+            health.current = health.max;
+            save.room = current.name.clone();
+            save.bench_room = current.name.clone();
+            save.bench_col = col;
+            save.bench_row = row;
+            save::write_save(&save);
+            for entity in &rocks {
+                commands.entity(entity).despawn();
+            }
+        }
+        Some(_) => {}
     }
 }
 

@@ -10,11 +10,13 @@ mod camera;
 #[cfg(debug_assertions)]
 mod editor;
 mod hazards;
+mod health;
 mod input;
 mod menu;
 mod physics;
 mod player;
 mod ron;
+mod save;
 mod state;
 mod world;
 mod worldmap;
@@ -23,6 +25,7 @@ use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
 use menu::Paused;
+use save::Save;
 use state::GameState;
 use worldmap::MapView;
 
@@ -52,6 +55,7 @@ fn main() {
             .set(ImagePlugin::default_nearest()),
     )
     .insert_resource(ClearColor(Color::srgb(0.07, 0.08, 0.12)))
+    .init_resource::<Save>()
     .init_state::<GameState>()
     .configure_sets(
         Update,
@@ -75,6 +79,7 @@ fn main() {
         world::WorldPlugin,
         player::PlayerPlugin,
         hazards::HazardPlugin,
+        health::HealthPlugin,
         camera::CameraPlugin,
         worldmap::WorldMapPlugin,
         menu::MenuPlugin,

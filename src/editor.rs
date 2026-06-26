@@ -22,7 +22,9 @@ use bevy::prelude::*;
 use crate::hazards::RockSprite;
 use crate::menu::Paused;
 use crate::state::GameState;
-use crate::world::{CurrentRoom, GameAssets, MapData, START_MARKER, Teleport, map_fs_path};
+use crate::world::{
+    BENCH_GLYPH, CurrentRoom, GameAssets, MapData, START_MARKER, Teleport, map_fs_path,
+};
 use crate::worldmap::MapView;
 
 /// Sentinel for the portal brush — never written to the grid (portals are stored
@@ -30,17 +32,20 @@ use crate::worldmap::MapView;
 const PORTAL_BRUSH: char = 'P';
 
 /// The paint brushes, by the grid character they write.
-const BRUSHES: [(char, &str); 6] = [
+const BRUSHES: [(char, &str); 7] = [
     ('#', "Wall"),
     ('^', "Spike"),
     ('R', "Rock"),
     (START_MARKER, "Start"),
+    (BENCH_GLYPH, "Bench"),
     (PORTAL_BRUSH, "Portal"),
     ('.', "Erase"),
 ];
 
 /// Editor colour for a teleporter pad (matches the in-game pad).
 const PORTAL_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
+/// Editor colour for a bench (matches the in-game bench).
+const BENCH_COLOR: Color = Color::srgb(0.85, 0.62, 0.32);
 
 /// Dark room tints to cycle through with `B`.
 const PALETTE: [[f32; 3]; 8] = [
@@ -437,11 +442,11 @@ fn draw_tiles(
     );
     for (r, row) in buffer.grid.iter().enumerate() {
         for (c, &ch) in row.iter().enumerate() {
+            let pos = Vec2::new(
+                top_left.x + (c as f32 + 0.5) * tile,
+                top_left.y - (r as f32 + 0.5) * tile,
+            );
             if let Some(image) = sprite_for(ch, assets, rock) {
-                let pos = Vec2::new(
-                    top_left.x + (c as f32 + 0.5) * tile,
-                    top_left.y - (r as f32 + 0.5) * tile,
-                );
                 commands.spawn((
                     EditorEntity,
                     Sprite {
@@ -451,6 +456,8 @@ fn draw_tiles(
                     },
                     Transform::from_xyz(pos.x, pos.y, 152.0),
                 ));
+            } else if ch == BENCH_GLYPH {
+                box_at(commands, pos, Vec2::splat(tile * 0.9), 152.0, BENCH_COLOR);
             }
         }
     }

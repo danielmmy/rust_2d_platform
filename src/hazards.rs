@@ -1,15 +1,17 @@
 //! Environmental dangers: ground spikes and falling rocks.
 //!
-//! Anything carrying a [`Hazard`] kills the player on contact. Death is instant
-//! and forgiving — you respawn at the room's entry point ([`RespawnPoint`]),
-//! Celeste-style, so precision sections stay fun. (Falling off the world is
-//! handled by room transitions in [`crate::world`], not here.)
+//! Anything carrying a [`Hazard`] hurts the player on contact, emitting a
+//! [`Hurt`](crate::health) so the health system spends a heart and respawns at the
+//! room's entry point ([`RespawnPoint`]) — or, on the last heart, at the last
+//! bench. (Falling off the world is handled by room transitions in
+//! [`crate::world`], which also reports a hit.)
 
 use bevy::prelude::*;
 
 use crate::GameSet;
+use crate::health::{Hurt, Invuln};
 use crate::physics::{self, Solids, TILE};
-use crate::player::{PLAYER_HALF, Player, Velocity};
+use crate::player::{PLAYER_HALF, Player};
 use crate::world::MapEntity;
 
 /// Deadly half-extents of a spike cell (a touch smaller than the tile, to be fair).
@@ -52,7 +54,7 @@ impl Plugin for HazardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RespawnPoint>().add_systems(
             Update,
-            (spawn_rocks, update_rocks, hazard_respawn)
+            (spawn_rocks, update_rocks, hazard_contact)
                 .chain()
                 .in_set(GameSet::Hazards),
         );
@@ -102,30 +104,28 @@ fn update_rocks(
     }
 }
 
-fn hazard_respawn(
-    respawn: Res<RespawnPoint>,
+fn hazard_contact(
+    invuln: Res<Invuln>,
     hazards: Query<(&Transform, &Hazard), Without<Player>>,
-    mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
+    player: Query<&Transform, With<Player>>,
+    mut hurt: MessageWriter<Hurt>,
 ) {
-    let Ok((mut player_tf, mut velocity)) = player.single_mut() else {
+    // Skip while invulnerable, so one touch costs a single heart.
+    if invuln.0 > 0.0 {
+        return;
+    }
+    let Ok(player_tf) = player.single() else {
         return;
     };
     let player_pos = player_tf.translation.truncate();
 
-    // Falling off the world is handled by room transitions; here we only kill on
+    // Falling off the world is handled by room transitions; here we only hurt on
     // contact with a hazard (spikes, falling rocks).
-    let mut died = false;
-    for (hazard_tf, hazard) in &hazards {
+    let touched = hazards.iter().any(|(hazard_tf, hazard)| {
         let delta = (hazard_tf.translation.truncate() - player_pos).abs();
-        if delta.x < hazard.half.x + PLAYER_HALF.x && delta.y < hazard.half.y + PLAYER_HALF.y {
-            died = true;
-            break;
-        }
-    }
-
-    if died {
-        player_tf.translation.x = respawn.0.x;
-        player_tf.translation.y = respawn.0.y;
-        velocity.0 = Vec2::ZERO;
+        delta.x < hazard.half.x + PLAYER_HALF.x && delta.y < hazard.half.y + PLAYER_HALF.y
+    });
+    if touched {
+        hurt.write(Hurt);
     }
 }

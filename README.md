@@ -23,10 +23,16 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | World map | `M` | `Start` |
 | Pause | `Esc` | `Select` |
 
-The game opens on a **main menu** (Start / Quit); during play, **`Esc`** (or
-`Select`) brings up a **pause menu** (Continue / Quit). Menus are navigated with
-up/down and confirmed with jump / `Enter`. In **debug builds** both menus gain a
-**Level Builder** entry (see below).
+The game opens on a **main menu** (New Game / Load Game / Quit). **New Game** and
+**Load Game** open a **three-slot** picker — pick a slot to start fresh, or load a
+slot you've saved. During play, **`Esc`** (or `Select`) brings up a **pause menu**
+(Continue / Quit). Menus are navigated with up/down and confirmed with jump /
+`Enter`. In **debug builds** both menus gain a **Level Builder** entry (see below).
+
+You have **three hearts** (shown top-left). Spikes, falling rocks, and falling into
+a pit each cost a heart, with brief invulnerability after a hit; a non-fatal hit
+returns you to the room's entrance. **Lose all hearts and you respawn at the last
+bench** you rested at, hearts refilled.
 
 Jump is **hold-to-go-higher**, with **coyote time** (jump just after a ledge) and
 **jump buffering** (press just before landing). Rooms connect like Hollow Knight:
@@ -61,13 +67,18 @@ The world is a 4×3 grid of tall rooms (each larger than the screen, so the
 with zig-zag ledges gives the climbing; **ceiling/floor gaps** are the up/down
 doors and **side corridors** are the left/right doors. Hazards are sparse and
 avoidable: **ground spikes** in dead-end corners and **falling rocks** in the
-open. Touching one respawns you at the room's entry, instantly (Celeste-style).
+open. Touching one costs a **heart** (with brief invulnerability) and bounces you
+to the room's entrance; lose all three hearts and you respawn at the last bench.
+
+**Benches** are checkpoints — the start room has one. Rest on a bench to **save**
+your game, **refill** your hearts, and **reset** the room's enemies; the bench you
+last rested at is where death returns you. Benches show on the world map as warm
+cells.
 
 Besides the edge doors, rooms can be wired together with **teleporters** — pads
-that link two distant rooms directly. Step onto one and you reappear on its
-partner's pad in the linked room (a pair shares a glyph and points at each other,
-so it's a two-way portal). The demo links the start room `r0_0` to the far corner
-`r3_2`; teleporters show up on the world map as cyan cells.
+that link two distant rooms (or two spots in the same room) directly. Each pad
+stores its destination as explicit room + cell coordinates, and shows on the world
+map as a cyan cell.
 
 ## Extending it
 
@@ -78,12 +89,14 @@ The structure is plugin-per-concern:
 | [`input`](src/input.rs) | Keyboard + gamepad → one `PlayerIntent`. |
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
 | [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`. |
-| [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph. |
+| [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
-| [`hazards`](src/hazards.rs) | Spikes + falling rocks → instant respawn. |
+| [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
+| [`health`](src/health.rs) | Hearts, i-frames, the heart HUD, death → last bench. |
+| [`save`](src/save.rs) | Three-slot save system (room + bench), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
-| [`menu`](src/menu.rs) | Main menu + pause menu (`Esc`); `MainMenu`/`Paused` states. |
+| [`menu`](src/menu.rs) | Main menu (slot picker) + pause menu (`Esc`); `MainMenu`/`Paused` states. |
 | [`editor`](src/editor.rs) | **Dev-only** level builder (`F2`): a tile view + a room-manager map. |
 
 The crate's **only dependency is `bevy`** — the maps are `.map.ron` files read by
@@ -184,6 +197,10 @@ cyan cells; erase one (`X` over it) to remove that side. (Destinations are fixed
 cell coordinates, so moving a pad's room doesn't update its partner — re-link after
 such a move.)
 
+**Benches** — `Tab` to the **Bench** brush and paint to place a checkpoint (the
+grid glyph `B`). Resting on it in play saves the game, refills hearts, and resets
+enemies; it's also where the player respawns after losing all hearts.
+
 ### Replace the art
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
@@ -200,6 +217,12 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Added **hearts, benches, and a three-slot save system**. The
+  player has 3 hearts (HUD top-left); hazards/pits cost a heart with brief i-frames,
+  and losing all three respawns you at the last bench. **Benches** (`B` glyph, a
+  Bench brush in the builder) save the game, refill hearts, and reset enemies. The
+  title screen's **New Game** / **Load Game** open a 3-slot picker; saves are RON
+  files under `saves/`.
 - **2026-06-25** — Portals are stored as pure coordinates — each pad's own cell
   (`origin_col`/`origin_row`) and its destination (`to`/`dest_col`/`dest_row`) —
   with **no grid glyph**, so they never use up tile characters. A room can hold many
