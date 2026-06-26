@@ -278,6 +278,13 @@ fn edit_tiles(
             redraw(&mut commands, &overlay);
             draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
         } else if keys.just_pressed(KeyCode::Space) {
+            if from_room == buffer.name && from_cell == buffer.cursor {
+                // Self-portal: the exit must be a different tile from the entrance.
+                buffer.status = "portal: exit must be on another tile".to_string();
+                redraw(&mut commands, &overlay);
+                draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+                return;
+            }
             pending.0 = None;
             buffer.status = link_portal(
                 &from_room,
@@ -587,10 +594,9 @@ fn edit_rooms(
             let dest = name_at((room.gx, room.gy));
             if room_data(&game_assets, &map_assets, &dest).is_none() {
                 room.status = "portal: pick an existing room".to_string();
-            } else if dest == from_room {
-                room.status = "portal: can't link a room to itself".to_string();
             } else {
-                // Load the destination and hand back to the tile view to drop the exit.
+                // Load the destination (may be the source room itself) and hand back
+                // to the tile view to drop the exit.
                 next_view.set(EditorView::Tiles);
                 *buffer = load_buffer(&dest, &game_assets, &map_assets);
                 buffer.status = "portal: drop the exit (space)   ·   esc cancels".to_string();
@@ -962,14 +968,25 @@ fn persist_map(
     true
 }
 
-/// First portal glyph not already in `used` (so it's unique within both rooms).
+/// First portal glyph not already in `used` (so it's unique within its room).
 fn free_portal_glyph(used: &HashSet<char>) -> Option<char> {
     PORTAL_GLYPHS.iter().copied().find(|g| !used.contains(g))
 }
 
-/// Complete a portal: drop a freshly-assigned glyph in both the source room
-/// (`from_room` at `from_cell`) and the destination (`buffer`, at its cursor), each
-/// linking `to` the other, and save both. Returns a status message.
+/// Set a glyph into a `tiles` row vector at `(col, row)` (grid coords).
+fn paint_glyph(tiles: &mut [String], col: usize, row: usize, glyph: char) {
+    if let Some(line) = tiles.get_mut(row) {
+        let mut chars: Vec<char> = line.chars().collect();
+        if col < chars.len() {
+            chars[col] = glyph;
+        }
+        *line = chars.into_iter().collect();
+    }
+}
+
+/// Complete a portal: drop a pad at the source cell (`from_room`/`from_cell`) and at
+/// the destination (`buffer` at its cursor), each linking to the other's cell, and
+/// save both. The two rooms may be the same (a self-portal). Returns a status.
 fn link_portal(
     from_room: &str,
     from_cell: (usize, usize),
@@ -978,41 +995,74 @@ fn link_portal(
     maps: &mut Assets<MapData>,
 ) -> String {
     let to_room = buffer.name.clone();
+    let (sc, sr) = (from_cell.0 as i32, from_cell.1 as i32); // source cell
+    let (dc, dr) = (buffer.cursor.0 as i32, buffer.cursor.1 as i32); // destination cell
+
+    if from_room == to_room {
+        // Self-portal: both pads live in the current buffer; pick two glyphs unused
+        // in it, then paint both and link each cell to the other.
+        let mut used: HashSet<char> = buffer.grid.iter().flat_map(|r| r.iter().copied()).collect();
+        let Some(g_src) = free_portal_glyph(&used) else {
+            return "no free portal glyph".to_string();
+        };
+        used.insert(g_src);
+        let Some(g_dest) = free_portal_glyph(&used) else {
+            return "no free portal glyph".to_string();
+        };
+        buffer.grid[from_cell.1][from_cell.0] = g_src;
+        buffer.grid[buffer.cursor.1][buffer.cursor.0] = g_dest;
+        buffer.teleports.push(Teleport {
+            glyph: g_src,
+            to: to_room.clone(),
+            col: dc,
+            row: dr,
+        });
+        buffer.teleports.push(Teleport {
+            glyph: g_dest,
+            to: to_room.clone(),
+            col: sc,
+            row: sr,
+        });
+        let map = map_from_buffer(buffer);
+        if !persist_map(&to_room, &map, assets, maps) {
+            return "portal save failed".to_string();
+        }
+        return format!("portal linked within {to_room}");
+    }
+
+    // Cross-room: a glyph free in each room (they're independent now).
     let Some(mut source) = room_data(assets, maps, from_room).cloned() else {
         return format!("portal source '{from_room}' is gone");
     };
-
-    // Pick a glyph unused in either room.
-    let mut used: HashSet<char> = source.tiles.iter().flat_map(|r| r.chars()).collect();
-    used.extend(buffer.grid.iter().flat_map(|r| r.iter().copied()));
-    let Some(glyph) = free_portal_glyph(&used) else {
-        return "no free portal glyph".to_string();
+    let dest_used: HashSet<char> = buffer.grid.iter().flat_map(|r| r.iter().copied()).collect();
+    let Some(g_dest) = free_portal_glyph(&dest_used) else {
+        return "no free portal glyph (destination)".to_string();
+    };
+    let src_used: HashSet<char> = source.tiles.iter().flat_map(|r| r.chars()).collect();
+    let Some(g_src) = free_portal_glyph(&src_used) else {
+        return "no free portal glyph (source)".to_string();
     };
 
-    // Destination endpoint goes through the live buffer (saved below).
-    let (bc, br) = buffer.cursor;
-    buffer.grid[br][bc] = glyph;
+    // Destination pad (in the live buffer) links back to the source cell.
+    buffer.grid[buffer.cursor.1][buffer.cursor.0] = g_dest;
     buffer.teleports.push(Teleport {
-        glyph,
+        glyph: g_dest,
         to: from_room.to_string(),
+        col: sc,
+        row: sr,
     });
     let dest_map = map_from_buffer(buffer);
     if !persist_map(&to_room, &dest_map, assets, maps) {
         return "portal save failed (destination)".to_string();
     }
 
-    // Source endpoint is written straight into its room data.
-    let (col, row) = from_cell;
-    if let Some(line) = source.tiles.get_mut(row) {
-        let mut chars: Vec<char> = line.chars().collect();
-        if col < chars.len() {
-            chars[col] = glyph;
-        }
-        *line = chars.into_iter().collect();
-    }
+    // Source pad (in the source room's data) links to the destination cell.
+    paint_glyph(&mut source.tiles, from_cell.0, from_cell.1, g_src);
     source.teleports.push(Teleport {
-        glyph,
+        glyph: g_src,
         to: to_room.clone(),
+        col: dc,
+        row: dr,
     });
     if !persist_map(from_room, &source, assets, maps) {
         return "portal save failed (source)".to_string();

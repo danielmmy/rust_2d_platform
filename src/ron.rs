@@ -59,6 +59,11 @@ impl Value {
         self.as_f64().map(|n| n as f32)
     }
 
+    /// Read this value as an `i32` (numbers are stored as `f64`).
+    pub fn as_i32(&self) -> Result<i32, RonError> {
+        self.as_f64().map(|n| n as i32)
+    }
+
     /// Borrow this value as a list, or fail if it isn't one.
     pub fn as_list(&self) -> Result<&[Value], RonError> {
         match self {

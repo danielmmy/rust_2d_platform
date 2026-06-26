@@ -8,7 +8,7 @@
     east: "r2_0",
     west: "r0_0",
     teleports: [
-        (glyph: '0', to: "r0_0"),
+        (glyph: '0', to: "r0_0", col: 7, row: 17),
     ],
     bg: [0.32, 0.24, 0.16],
     tiles: [
