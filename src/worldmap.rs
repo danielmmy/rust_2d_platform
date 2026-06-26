@@ -471,6 +471,23 @@ fn draw_room(commands: &mut Commands, center: Vec2, max: Vec2, map: &MapData, z:
             ));
         }
     }
+
+    // Teleporter pads (coordinate data) overlaid at their origin cells.
+    for tp in &map.teleports {
+        if (tp.origin_col as f32) < w && (tp.origin_row as f32) < h {
+            let x = center.x - room_w / 2.0 + (tp.origin_col as f32 + 0.5) * tile;
+            let y = center.y + room_h / 2.0 - (tp.origin_row as f32 + 0.5) * tile;
+            commands.spawn((
+                WorldMapEntity,
+                Sprite {
+                    color: PORTAL_COLOR,
+                    custom_size: Some(Vec2::splat(tile * 0.92)),
+                    ..default()
+                },
+                Transform::from_xyz(x, y, z + 1.0),
+            ));
+        }
+    }
 }
 
 fn backdrop(commands: &mut Commands, center: Vec2) {
@@ -636,6 +653,9 @@ fn room_data<'a>(
     assets.maps.get(name).and_then(|h| maps.get(h))
 }
 
+/// Colour for teleporter pads on the minimap (drawn from portal coords, not tiles).
+const PORTAL_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
+
 fn tile_color(ch: char, map: &MapData) -> Option<Color> {
     if ch == START_MARKER {
         Some(Color::srgb(0.4, 0.9, 0.5))
@@ -645,8 +665,6 @@ fn tile_color(ch: char, map: &MapData) -> Option<Color> {
         Some(Color::srgb(0.9, 0.3, 0.3))
     } else if map.rocks.contains(ch) {
         Some(Color::srgb(0.85, 0.6, 0.3))
-    } else if map.teleports.iter().any(|t| t.glyph == ch) {
-        Some(Color::srgb(0.45, 0.85, 1.0))
     } else {
         None
     }

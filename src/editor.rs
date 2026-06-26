@@ -25,8 +25,8 @@ use crate::state::GameState;
 use crate::world::{CurrentRoom, GameAssets, MapData, START_MARKER, Teleport, map_fs_path};
 use crate::worldmap::MapView;
 
-/// Sentinel for the portal brush — never written to the grid. Painting it starts
-/// the two-room linking flow instead; the actual glyph is assigned on completion.
+/// Sentinel for the portal brush — never written to the grid (portals are stored
+/// as coordinate data, not glyphs). Painting it starts the linking flow instead.
 const PORTAL_BRUSH: char = 'P';
 
 /// The paint brushes, by the grid character they write.
@@ -37,12 +37,6 @@ const BRUSHES: [(char, &str); 6] = [
     (START_MARKER, "Start"),
     (PORTAL_BRUSH, "Portal"),
     ('.', "Erase"),
-];
-
-/// Glyphs auto-assigned to portal pairs (none clash with another legend, and one
-/// is only used if it's free in both linked rooms).
-const PORTAL_GLYPHS: [char; 16] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'T', 'U', 'V', 'W', 'Y', 'Z',
 ];
 
 /// Editor colour for a teleporter pad (matches the in-game pad).
@@ -87,7 +81,7 @@ struct EditBuffer {
     south: String,
     east: String,
     west: String,
-    teleports: Vec<Teleport>, // preserved across edits (no painting UI yet)
+    teleports: Vec<Teleport>, // coordinate-based portals (see the Portal brush)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -362,11 +356,14 @@ fn edit_tiles(
             return;
         }
         buffer.grid[r][c] = BRUSHES[buffer.brush].0;
+        clear_portal_origin(&mut buffer.teleports, c as i32, r as i32);
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyX) {
         let (c, r) = buffer.cursor;
         buffer.grid[r][c] = '.';
+        // Pads aren't grid glyphs, so erasing a cell also drops a pad there.
+        clear_portal_origin(&mut buffer.teleports, c as i32, r as i32);
         changed = true;
     }
     if keys.just_pressed(KeyCode::Tab) {
@@ -440,11 +437,11 @@ fn draw_tiles(
     );
     for (r, row) in buffer.grid.iter().enumerate() {
         for (c, &ch) in row.iter().enumerate() {
-            let pos = Vec2::new(
-                top_left.x + (c as f32 + 0.5) * tile,
-                top_left.y - (r as f32 + 0.5) * tile,
-            );
             if let Some(image) = sprite_for(ch, assets, rock) {
+                let pos = Vec2::new(
+                    top_left.x + (c as f32 + 0.5) * tile,
+                    top_left.y - (r as f32 + 0.5) * tile,
+                );
                 commands.spawn((
                     EditorEntity,
                     Sprite {
@@ -454,18 +451,18 @@ fn draw_tiles(
                     },
                     Transform::from_xyz(pos.x, pos.y, 152.0),
                 ));
-            } else if buffer.teleports.iter().any(|t| t.glyph == ch) {
-                // Teleporter pad: a cyan square labelled with its glyph (the pair
-                // sharing a glyph are the two ends of one portal).
-                box_at(commands, pos, Vec2::splat(tile * 0.9), 152.0, PORTAL_COLOR);
-                text_at(
-                    commands,
-                    pos,
-                    tile * 0.6,
-                    Color::srgb(0.05, 0.1, 0.16),
-                    &ch.to_string(),
-                );
             }
+        }
+    }
+
+    // Teleporter pads (coordinate data) drawn over the grid as cyan squares.
+    for tp in &buffer.teleports {
+        if (tp.origin_col as usize) < cols && (tp.origin_row as usize) < rows {
+            let pos = Vec2::new(
+                top_left.x + (tp.origin_col as f32 + 0.5) * tile,
+                top_left.y - (tp.origin_row as f32 + 0.5) * tile,
+            );
+            box_at(commands, pos, Vec2::splat(tile * 0.9), 152.0, PORTAL_COLOR);
         }
     }
 
@@ -968,24 +965,13 @@ fn persist_map(
     true
 }
 
-/// First portal glyph not already in `used` (so it's unique within its room).
-fn free_portal_glyph(used: &HashSet<char>) -> Option<char> {
-    PORTAL_GLYPHS.iter().copied().find(|g| !used.contains(g))
+/// Drop any portal whose origin is `(col, row)` from a room's list.
+fn clear_portal_origin(teleports: &mut Vec<Teleport>, col: i32, row: i32) {
+    teleports.retain(|t| (t.origin_col, t.origin_row) != (col, row));
 }
 
-/// Set a glyph into a `tiles` row vector at `(col, row)` (grid coords).
-fn paint_glyph(tiles: &mut [String], col: usize, row: usize, glyph: char) {
-    if let Some(line) = tiles.get_mut(row) {
-        let mut chars: Vec<char> = line.chars().collect();
-        if col < chars.len() {
-            chars[col] = glyph;
-        }
-        *line = chars.into_iter().collect();
-    }
-}
-
-/// Complete a portal: drop a pad at the source cell (`from_room`/`from_cell`) and at
-/// the destination (`buffer` at its cursor), each linking to the other's cell, and
+/// Complete a portal: a pad at the source cell (`from_room`/`from_cell`) and one at
+/// the destination (`buffer` at its cursor), each linking to the other's cell, then
 /// save both. The two rooms may be the same (a self-portal). Returns a status.
 fn link_portal(
     from_room: &str,
@@ -999,29 +985,22 @@ fn link_portal(
     let (dc, dr) = (buffer.cursor.0 as i32, buffer.cursor.1 as i32); // destination cell
 
     if from_room == to_room {
-        // Self-portal: both pads live in the current buffer; pick two glyphs unused
-        // in it, then paint both and link each cell to the other.
-        let mut used: HashSet<char> = buffer.grid.iter().flat_map(|r| r.iter().copied()).collect();
-        let Some(g_src) = free_portal_glyph(&used) else {
-            return "no free portal glyph".to_string();
-        };
-        used.insert(g_src);
-        let Some(g_dest) = free_portal_glyph(&used) else {
-            return "no free portal glyph".to_string();
-        };
-        buffer.grid[from_cell.1][from_cell.0] = g_src;
-        buffer.grid[buffer.cursor.1][buffer.cursor.0] = g_dest;
+        // Self-portal: both pads live in the current buffer, linking each to the other.
+        clear_portal_origin(&mut buffer.teleports, sc, sr);
+        clear_portal_origin(&mut buffer.teleports, dc, dr);
         buffer.teleports.push(Teleport {
-            glyph: g_src,
+            origin_col: sc,
+            origin_row: sr,
             to: to_room.clone(),
-            col: dc,
-            row: dr,
+            dest_col: dc,
+            dest_row: dr,
         });
         buffer.teleports.push(Teleport {
-            glyph: g_dest,
+            origin_col: dc,
+            origin_row: dr,
             to: to_room.clone(),
-            col: sc,
-            row: sr,
+            dest_col: sc,
+            dest_row: sr,
         });
         let map = map_from_buffer(buffer);
         if !persist_map(&to_room, &map, assets, maps) {
@@ -1030,39 +1009,31 @@ fn link_portal(
         return format!("portal linked within {to_room}");
     }
 
-    // Cross-room: a glyph free in each room (they're independent now).
+    // Cross-room: a pad in each room, pointing at the other's cell.
     let Some(mut source) = room_data(assets, maps, from_room).cloned() else {
         return format!("portal source '{from_room}' is gone");
     };
-    let dest_used: HashSet<char> = buffer.grid.iter().flat_map(|r| r.iter().copied()).collect();
-    let Some(g_dest) = free_portal_glyph(&dest_used) else {
-        return "no free portal glyph (destination)".to_string();
-    };
-    let src_used: HashSet<char> = source.tiles.iter().flat_map(|r| r.chars()).collect();
-    let Some(g_src) = free_portal_glyph(&src_used) else {
-        return "no free portal glyph (source)".to_string();
-    };
 
-    // Destination pad (in the live buffer) links back to the source cell.
-    buffer.grid[buffer.cursor.1][buffer.cursor.0] = g_dest;
+    clear_portal_origin(&mut buffer.teleports, dc, dr);
     buffer.teleports.push(Teleport {
-        glyph: g_dest,
+        origin_col: dc,
+        origin_row: dr,
         to: from_room.to_string(),
-        col: sc,
-        row: sr,
+        dest_col: sc,
+        dest_row: sr,
     });
     let dest_map = map_from_buffer(buffer);
     if !persist_map(&to_room, &dest_map, assets, maps) {
         return "portal save failed (destination)".to_string();
     }
 
-    // Source pad (in the source room's data) links to the destination cell.
-    paint_glyph(&mut source.tiles, from_cell.0, from_cell.1, g_src);
+    clear_portal_origin(&mut source.teleports, sc, sr);
     source.teleports.push(Teleport {
-        glyph: g_src,
+        origin_col: sc,
+        origin_row: sr,
         to: to_room.clone(),
-        col: dc,
-        row: dr,
+        dest_col: dc,
+        dest_row: dr,
     });
     if !persist_map(from_room, &source, assets, maps) {
         return "portal save failed (source)".to_string();
@@ -1266,20 +1237,6 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
 }
 
 fn map_from_buffer(buffer: &EditBuffer) -> MapData {
-    let tiles: Vec<String> = buffer
-        .grid
-        .iter()
-        .map(|row| row.iter().collect::<String>())
-        .collect();
-    // Drop teleports whose pad glyph is no longer in the grid (e.g. erased), so we
-    // never save a teleporter with no pad.
-    let present: HashSet<char> = tiles.iter().flat_map(|r| r.chars()).collect();
-    let teleports = buffer
-        .teleports
-        .iter()
-        .filter(|t| present.contains(&t.glyph))
-        .cloned()
-        .collect();
     MapData {
         name: buffer.display.clone(),
         solid: "#".to_string(),
@@ -1289,9 +1246,13 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         south: buffer.south.clone(),
         east: buffer.east.clone(),
         west: buffer.west.clone(),
-        teleports,
+        teleports: buffer.teleports.clone(),
         bg: buffer.bg,
-        tiles,
+        tiles: buffer
+            .grid
+            .iter()
+            .map(|row| row.iter().collect::<String>())
+            .collect(),
     }
 }
 
@@ -1455,16 +1416,27 @@ mod tests {
         assert_eq!(start.tiles[21].chars().nth(9), Some('#'));
     }
 
-    /// Portal glyphs avoid characters already in use, and run out gracefully.
+    /// Erasing a cell drops a portal whose origin sits there.
     #[test]
-    fn portal_glyph_skips_used_chars() {
-        let mut used: HashSet<char> = "#^R@.".chars().collect();
-        let glyph = free_portal_glyph(&used).expect("a glyph is free");
-        assert!(!used.contains(&glyph));
-        assert!(PORTAL_GLYPHS.contains(&glyph));
-
-        // With every portal glyph taken, there's nothing left to assign.
-        used.extend(PORTAL_GLYPHS);
-        assert_eq!(free_portal_glyph(&used), None);
+    fn clear_portal_origin_removes_matching() {
+        let mut teleports = vec![
+            Teleport {
+                origin_col: 3,
+                origin_row: 4,
+                to: "r0_0".to_string(),
+                dest_col: 1,
+                dest_row: 1,
+            },
+            Teleport {
+                origin_col: 5,
+                origin_row: 6,
+                to: "r0_0".to_string(),
+                dest_col: 2,
+                dest_row: 2,
+            },
+        ];
+        clear_portal_origin(&mut teleports, 3, 4);
+        assert_eq!(teleports.len(), 1);
+        assert_eq!((teleports[0].origin_col, teleports[0].origin_row), (5, 6));
     }
 }

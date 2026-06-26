@@ -23,18 +23,18 @@ use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
 use crate::state::GameState;
 
-/// A teleporter pad declared by a room: the grid `glyph` that marks its cell, and
-/// the explicit destination it sends the player to — room `to` plus the cell
-/// `(col, row)` in grid coords (row 0 = top, as written in `tiles`). Destinations
-/// are explicit (not glyph-matched), so a room may hold many pads, and a pad may
-/// even target another cell in its own room. The glyph need only be unique within
-/// its own room.
+/// A teleporter pad, stored as pure coordinates: stepping on the cell
+/// `(origin_col, origin_row)` sends the player to room `to` at `(dest_col,
+/// dest_row)`. All are grid cells (row 0 = top, as written in `tiles`). Because a
+/// pad needs no grid glyph, it never competes with tile characters — a room may
+/// hold many pads, and a pad may even target another cell in its own room.
 #[derive(Clone)]
 pub struct Teleport {
-    pub glyph: char,
+    pub origin_col: i32,
+    pub origin_row: i32,
     pub to: String,
-    pub col: i32,
-    pub row: i32,
+    pub dest_col: i32,
+    pub dest_row: i32,
 }
 
 /// One map's data, read from a `.map.ron` file by [`MapLoader`].
@@ -99,10 +99,11 @@ impl MapData {
                 .iter()
                 .map(|t| {
                     Ok(Teleport {
-                        glyph: t.field("glyph")?.as_char()?,
+                        origin_col: t.field("origin_col")?.as_i32()?,
+                        origin_row: t.field("origin_row")?.as_i32()?,
                         to: t.field("to")?.as_str()?.to_string(),
-                        col: t.field("col")?.as_i32()?,
-                        row: t.field("row")?.as_i32()?,
+                        dest_col: t.field("dest_col")?.as_i32()?,
+                        dest_row: t.field("dest_row")?.as_i32()?,
                     })
                 })
                 .collect::<Result<Vec<_>, RonError>>()?,
@@ -150,8 +151,8 @@ impl MapData {
             .iter()
             .map(|t| {
                 format!(
-                    "        (glyph: '{}', to: \"{}\", col: {}, row: {}),\n",
-                    t.glyph, t.to, t.col, t.row
+                    "        (origin_col: {}, origin_row: {}, to: \"{}\", dest_col: {}, dest_row: {}),\n",
+                    t.origin_col, t.origin_row, t.to, t.dest_col, t.dest_row
                 )
             })
             .collect();
@@ -562,21 +563,32 @@ fn handle_load_map(
                     RockSpawner { timer },
                     Transform::from_xyz(center.x, center.y, 1.0),
                 ));
-            } else if let Some(tp) = map.teleports.iter().find(|t| t.glyph == ch) {
-                commands.spawn((
-                    MapEntity,
-                    Teleporter {
-                        to: tp.to.clone(),
-                        dest: (tp.col, tp.row),
-                    },
-                    Sprite {
-                        color: TELEPORT_COLOR,
-                        custom_size: Some(Vec2::splat(TILE)),
-                        ..default()
-                    },
-                    Transform::from_xyz(center.x, center.y, 1.0),
-                ));
             }
+        }
+    }
+
+    // Teleporter pads are pure data (no grid glyph) — spawn one per portal at its
+    // origin cell, flipping the row so y points up.
+    for tp in &map.teleports {
+        if (0..width).contains(&tp.origin_col) && (0..height).contains(&tp.origin_row) {
+            let world_row = height - 1 - tp.origin_row;
+            commands.spawn((
+                MapEntity,
+                Teleporter {
+                    to: tp.to.clone(),
+                    dest: (tp.dest_col, tp.dest_row),
+                },
+                Sprite {
+                    color: TELEPORT_COLOR,
+                    custom_size: Some(Vec2::splat(TILE)),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    tp.origin_col as f32 * TILE + TILE / 2.0,
+                    world_row as f32 * TILE + TILE / 2.0,
+                    1.0,
+                ),
+            ));
         }
     }
 
@@ -748,23 +760,30 @@ mod tests {
                     );
                 }
             }
-            // Teleporters must point at a real room, at an in-bounds cell.
+            // Teleporters: origin must be in this room and dest in a real room.
+            let dims = |m: &MapData| {
+                (
+                    m.tiles.iter().map(|r| r.chars().count()).max().unwrap_or(0) as i32,
+                    m.tiles.len() as i32,
+                )
+            };
+            let (ow, oh) = dims(map);
             for tp in &map.teleports {
+                assert!(
+                    (0..ow).contains(&tp.origin_col) && (0..oh).contains(&tp.origin_row),
+                    "{name}: teleporter origin ({}, {}) out of bounds",
+                    tp.origin_col,
+                    tp.origin_row
+                );
                 let dest = maps
                     .get(&tp.to)
                     .unwrap_or_else(|| panic!("{name}: teleporter to unknown room '{}'", tp.to));
-                let dh = dest.tiles.len() as i32;
-                let dw = dest
-                    .tiles
-                    .iter()
-                    .map(|r| r.chars().count())
-                    .max()
-                    .unwrap_or(0) as i32;
+                let (dw, dh) = dims(dest);
                 assert!(
-                    (0..dw).contains(&tp.col) && (0..dh).contains(&tp.row),
+                    (0..dw).contains(&tp.dest_col) && (0..dh).contains(&tp.dest_row),
                     "{name}: teleporter dest ({}, {}) out of bounds in '{}'",
-                    tp.col,
-                    tp.row,
+                    tp.dest_col,
+                    tp.dest_row,
                     tp.to
                 );
             }
@@ -791,10 +810,11 @@ mod tests {
             east: "r1_0".to_string(),
             west: String::new(),
             teleports: vec![Teleport {
-                glyph: 'T',
+                origin_col: 1,
+                origin_row: 1,
                 to: "r1_1".to_string(),
-                col: 7,
-                row: 2,
+                dest_col: 7,
+                dest_row: 2,
             }],
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
@@ -814,9 +834,10 @@ mod tests {
         assert_eq!(parsed.bg, original.bg);
         assert_eq!(parsed.tiles, original.tiles);
         assert_eq!(parsed.teleports.len(), 1);
-        assert_eq!(parsed.teleports[0].glyph, 'T');
+        assert_eq!(parsed.teleports[0].origin_col, 1);
+        assert_eq!(parsed.teleports[0].origin_row, 1);
         assert_eq!(parsed.teleports[0].to, "r1_1");
-        assert_eq!(parsed.teleports[0].col, 7);
-        assert_eq!(parsed.teleports[0].row, 2);
+        assert_eq!(parsed.teleports[0].dest_col, 7);
+        assert_eq!(parsed.teleports[0].dest_row, 2);
     }
 }

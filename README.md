@@ -106,25 +106,26 @@ room just names the neighbour on each side (empty = a wall / bottomless edge):
     east:   "r1_0",              // …right edge
     west:   "",                  // …left edge
     teleports: [                 // teleporter pads (optional)
-        // step on the `T` cell → arrive at r3_2's cell (col 14, row 20)
-        (glyph: 'T', to: "r3_2", col: 14, row: 20),
+        // a pad at (col 1, row 1) → arrive at r3_2's cell (col 14, row 20)
+        (origin_col: 1, origin_row: 1, to: "r3_2", dest_col: 14, dest_row: 20),
     ],
     bg:     [0.32, 0.16, 0.16],  // background colour [r, g, b] in 0..1
-    tiles: [ "######", "#T@.#", "######" ],   // grid, top to bottom; `@` = start
+    tiles: [ "######", "#.@.#", "######" ],   // grid, top to bottom; `@` = start
 )
 ```
 
-A teleporter is a glyph in the grid (any unused character) plus an entry naming the
-**destination room and cell** — `col`/`row` are grid coordinates (`row` counts from
-the top, like the `tiles` lines). Destinations are explicit, so:
+A teleporter is **pure coordinate data** — no grid glyph, so pads never use up tile
+characters. Each entry names its own cell (`origin_col`/`origin_row`) and its
+**destination** room + cell (`to` / `dest_col` / `dest_row`); all are grid
+coordinates (`row` counts from the top, like the `tiles` lines). Because nothing is
+matched by glyph:
 
-- a room can hold **many** pads (each glyph just needs to be unique *within* that
-  room), and
-- a pad can target **its own room** at a different cell (a self-portal).
+- a room can hold **many** pads, and
+- a pad can target **its own room** at another cell (a self-portal).
 
-For a two-way link, give each room a pad whose `to`/`col`/`row` points at the
-other's pad cell. A pad won't fire again until you've stepped ~1.5 tiles clear of
-it, so you land safely on the destination pad and don't bounce back and forth.
+For a two-way link, give each end a pad pointing at the other's cell. A pad won't
+fire again until you've stepped ~1.5 tiles clear of it, so you land safely on the
+destination pad and don't bounce back and forth.
 
 Each room has an optional **display name** (e.g. "Forest Glade", "Meadow") shown
 on the world map and in the builder; when empty it falls back to the file key.
@@ -175,13 +176,13 @@ The builder is `#[cfg(debug_assertions)]`, so it's compiled out of `--release`.
 
 **Portals** — `Tab` to the **Portal** brush and paint to drop the first endpoint;
 the room manager opens so you can pick the destination room (`Enter`) — **including
-the same room**, for a self-portal — then you paint the exit. The builder assigns
-each pad a glyph and links the two cells both ways automatically, saving both
-rooms. Press **`Esc`** any time before the exit is placed to cancel — the first
-endpoint is only written once the link completes, so cancelling leaves nothing
-behind. Erasing a pad drops its link on the next save. (Portal destinations are
-fixed cell coordinates, so moving or reordering a pad's room doesn't update the
-partner — re-link after such a move.)
+the same room**, for a self-portal — then you paint the exit. The builder records
+each pad's cell and links the two both ways automatically, saving both rooms. Press
+**`Esc`** any time before the exit is placed to cancel — the first endpoint is only
+written once the link completes, so cancelling leaves nothing behind. Pads show as
+cyan cells; erase one (`X` over it) to remove that side. (Destinations are fixed
+cell coordinates, so moving a pad's room doesn't update its partner — re-link after
+such a move.)
 
 ### Replace the art
 
@@ -199,11 +200,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
-- **2026-06-25** — Teleporter destinations are now stored as an explicit
-  **room + cell** (`to`, `col`, `row`) instead of being matched by a shared glyph.
-  A room can hold many portals, and a portal can target **its own room** at another
-  tile (self-portal); the builder supports both. Each pad's glyph need only be
-  unique within its room.
+- **2026-06-25** — Portals are stored as pure coordinates — each pad's own cell
+  (`origin_col`/`origin_row`) and its destination (`to`/`dest_col`/`dest_row`) —
+  with **no grid glyph**, so they never use up tile characters. A room can hold many
+  portals, and a portal can target **its own room** at another tile (self-portal);
+  the builder authors both. (Existing maps were migrated.)
 - **2026-06-25** — Teleporters no longer chain rapid teleports: a pad re-arms only
   once the player is ~1.5 tiles clear of every pad (a dead zone larger than the
   trigger), so you can't bounce back and forth or fire on the pad you arrive on.
