@@ -15,6 +15,8 @@ use crate::GameSet;
 use crate::health::Stun;
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
+use crate::save::Save;
+use crate::state::GameState;
 
 /// Collision half-extents (the sprite is a touch larger).
 pub const PLAYER_HALF: Vec2 = Vec2::new(11.0, 19.0);
@@ -31,6 +33,9 @@ pub struct JumpState {
     buffer: f32,
     jumping: bool,
     grounded: bool,
+    /// An unused mid-air jump is available (refreshed on landing; spent by the
+    /// double jump). Only usable once the ability is unlocked — see [`Abilities`].
+    air_jump: bool,
 }
 
 impl JumpState {
@@ -38,6 +43,13 @@ impl JumpState {
     pub fn grounded(&self) -> bool {
         self.grounded
     }
+}
+
+/// Unlockable player abilities (persisted in the [`Save`]).
+#[derive(Resource, Default)]
+pub struct Abilities {
+    /// A second jump in mid-air — the reward for beating the boss.
+    pub double_jump: bool,
 }
 
 /// Every knob that shapes how movement feels. Tweak and re-run to taste.
@@ -81,8 +93,15 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MovementConfig>()
+            .init_resource::<Abilities>()
+            .add_systems(OnEnter(GameState::Playing), apply_abilities)
             .add_systems(Update, movement.in_set(GameSet::Movement));
     }
+}
+
+/// Push the save's unlocked abilities into the live resource on entering play.
+fn apply_abilities(save: Res<Save>, mut abilities: ResMut<Abilities>) {
+    abilities.double_jump = save.double_jump;
 }
 
 fn approach(current: f32, target: f32, max_delta: f32) -> f32 {
@@ -99,6 +118,7 @@ fn movement(
     cfg: Res<MovementConfig>,
     solids: Res<Solids>,
     stun: Res<Stun>,
+    abilities: Res<Abilities>,
     mut query: Query<(&mut Transform, &mut Velocity, &mut JumpState, &mut Sprite), With<Player>>,
 ) {
     let dt = time.delta_secs();
@@ -128,6 +148,7 @@ fn movement(
             // --- coyote time + jump buffer ---
             if jump.grounded {
                 jump.coyote = cfg.coyote_time;
+                jump.air_jump = true; // a fresh mid-air jump on every landing
             } else {
                 jump.coyote = (jump.coyote - dt).max(0.0);
             }
@@ -143,6 +164,15 @@ fn movement(
                 jump.jumping = true;
                 jump.buffer = 0.0;
                 jump.coyote = 0.0;
+            } else if intent.jump_pressed
+                && !jump.grounded
+                && abilities.double_jump
+                && jump.air_jump
+            {
+                // --- double jump: a fresh press in the air, once per airtime ---
+                velocity.0.y = cfg.jump_speed;
+                jump.jumping = true;
+                jump.air_jump = false;
             }
 
             // --- variable height: releasing early cuts the rise ---

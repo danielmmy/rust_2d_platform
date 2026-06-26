@@ -7,6 +7,7 @@
 //! to extend, with art and levels under `assets/` that are simple to replace.
 
 mod anim;
+mod boss;
 mod camera;
 mod combat;
 mod editor;
@@ -86,6 +87,7 @@ fn main() {
         health::HealthPlugin,
         combat::CombatPlugin,
         stats::StatsPlugin,
+        boss::BossPlugin,
         anim::AnimationPlugin,
         camera::CameraPlugin,
         worldmap::WorldMapPlugin,

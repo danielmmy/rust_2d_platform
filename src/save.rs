@@ -73,6 +73,10 @@ pub struct Save {
     pub lost_room: String,
     pub lost_x: f32,
     pub lost_y: f32,
+    /// Comma-separated rooms whose boss has been beaten (so it doesn't respawn).
+    pub cleared_bosses: String,
+    /// Whether the double-jump ability has been unlocked (the boss reward).
+    pub double_jump: bool,
 }
 
 const SAVES_DIR: &str = "saves";
@@ -86,7 +90,8 @@ impl Save {
         format!(
             "(mode: \"{}\", name: \"{}\", room: \"{}\", bench_room: \"{}\", bench_col: {}, \
              bench_row: {}, energy: {}, vitality: {}, strength: {}, poise: {}, \
-             lost_amount: {}, lost_room: \"{}\", lost_x: {}, lost_y: {})\n",
+             lost_amount: {}, lost_room: \"{}\", lost_x: {}, lost_y: {}, \
+             cleared_bosses: \"{}\", double_jump: {})\n",
             self.mode.as_str(),
             self.name,
             self.room,
@@ -101,6 +106,8 @@ impl Save {
             self.lost_room,
             self.lost_x,
             self.lost_y,
+            self.cleared_bosses,
+            i32::from(self.double_jump),
         )
     }
 
@@ -142,6 +149,8 @@ impl Save {
             lost_room: opt_str("lost_room"),
             lost_x: opt_f32("lost_x"),
             lost_y: opt_f32("lost_y"),
+            cleared_bosses: opt_str("cleared_bosses"),
+            double_jump: opt_i32("double_jump") != 0,
         })
     }
 
@@ -185,9 +194,13 @@ mod tests {
             lost_room: "r0_0".to_string(),
             lost_x: 128.5,
             lost_y: -64.0,
+            cleared_bosses: "r0_1,r3_2".to_string(),
+            double_jump: true,
         };
         let parsed = Save::from_ron(2, &save.to_ron()).expect("parse");
         assert_eq!(parsed.mode, GameMode::Builder);
+        assert_eq!(parsed.cleared_bosses, "r0_1,r3_2");
+        assert!(parsed.double_jump);
         assert_eq!(parsed.name, "Wisp");
         assert_eq!(parsed.room, "r1_0");
         assert_eq!(parsed.bench_room, "r1_0");

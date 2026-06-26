@@ -131,6 +131,24 @@ stores its destination as explicit room + cell coordinates, shows on the world m
 as a cyan cell, and in play is an **animated halo** that flares active while you
 stand on it.
 
+**The boss & arenas.** A room becomes an **arena** through its map data: a `fog_wall`
+list of combatants to fight, plus **`F`** glyphs painting the Dark-Souls-style mist at
+its entrances. The listed foes **aren't there until you enter** — walk in (no
+interaction) and crossing the threshold **seals the exits**: you can't leave until
+every one of them is dead. Each `fog_wall` entry is `(boss: 0|1, kind, col, row)`: with
+`boss: 1` the `kind` picks a **boss type** ([`BOSS_KINDS`](src/boss.rs) — `0` the
+original, `1` a tougher red brute with double health); with `boss: 0` it's a normal
+enemy of that `kind`. A **boss** has a large health pool (shown on a bar across the
+top) and cycles three attacks — a **slam** leap, a **fan of throwables**, and
+**summoning** lesser foes — turning more aggressive past half health. Beat it (and any
+companions) for a big **energy** payout and a permanent new ability: the **double
+jump** (a second jump in mid-air — press jump again while airborne). The default world
+ships two: the original in `r0_1` and the red brute in the far corner `r3_2`. Each is
+**cleared independently** and persists, so a beaten boss never returns. Die and the
+arena resets for another attempt (your dropped energy waits inside). Author your own by
+editing a room's `fog_wall` list (and painting **Fog** cells for the mist) — see
+[`r0_1.map.ron`](assets/maps/r0_1.map.ron).
+
 ## Extending it
 
 The structure is plugin-per-concern:
@@ -147,6 +165,7 @@ The structure is plugin-per-concern:
 | [`health`](src/health.rs) | Health (sized by Vitality), i-frames, the colour-graded health-bar HUD, death → bloodstain + last bench. |
 | [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, bloodstain recovery, the 3-hit sword combo. |
 | [`stats`](src/stats.rs) | Character stats (Vitality/Strength/Poise), the upgrade shop, and the character screen. |
+| [`boss`](src/boss.rs) | The boss fight: fog-gate arena lock, attack patterns, projectiles, HUD, and the double-jump reward. |
 | [`save`](src/save.rs) | Ten-slot save system (mode + room + bench + progression), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
@@ -273,10 +292,10 @@ needed to run. Edit the source files and **rebuild** to embed the new versions.
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
 (`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `flyer.png`,
-`orb.png`, `slash.png`). Sizes are set in code via `custom_size`, so any resolution
-works — the world keeps the same scale. The enemy sheets (`enemy.png` walkers,
-`jumper.png` leapers, `flyer.png` winged flyers) are **near-white** so each kind tints
-them to its colour.
+`boss.png`, `orb.png`, `slash.png`). Sizes are set in code via `custom_size`, so any
+resolution works — the world keeps the same scale. The enemy sheets (`enemy.png`
+walkers, `jumper.png` leapers, `flyer.png` winged flyers) are **near-white** so each
+kind tints them to its colour; `boss.png` is a single big, full-colour sprite.
 
 **`player.png`, `portal.png`, and `bench.png` are sprite sheets** — each an N×M
 grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
@@ -306,6 +325,26 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Added **boss types** ([`BOSS_KINDS`](src/boss.rs)): a `fog_wall` boss
+  entry's `kind` now picks one (`0` original, `1` a **red, double-health** brute). The
+  original boss moved to `r0_1` and the red brute holds `r3_2`. Bosses are now cleared
+  **per room** (the save tracks a set of cleared rooms), so beating one doesn't clear
+  the other.
+- **2026-06-26** — Reworked arenas to **entry-triggered**, defined by a room's
+  **`fog_wall`** list (`(boss, kind, col, row)` combatants) with **`F`** glyphs drawing
+  the mist. The listed foes spawn only when you **enter** the room (no interaction);
+  entering seals the exits until they're all dead — replacing the press-`E` solid wall.
+  `MapData` gained the `fog_wall` field (parsed/serialised, preserved by the editor);
+  the `Z` boss glyph is gone (the boss is a `fog_wall` entry now). `r3_2` carries a boss
+  + one enemy.
+- **2026-06-26** — Added a **boss fight** in the far corner room (`r3_2`, Story mode).
+  A **fog gate** (interact with `E`) seals the arena — exits **lock** until the boss or
+  the player dies. The boss (big `boss.png` sprite, ~28 HP on a top-of-screen bar)
+  cycles three attacks — **slam** leap, **fan of throwables**, and **summoning** mobs —
+  and enrages past half health. Beating it grants a big energy reward and unlocks the
+  **double jump** ability (a mid-air second jump); both persist in the save, so the
+  boss stays dead. New [`boss`](src/boss.rs) module + the `Abilities` resource in
+  [`player`](src/player.rs).
 - **2026-06-26** — Made release builds **self-contained**: a [`build.rs`](build.rs)
   bakes the **Story levels** (`assets/maps/`) and **all sprites** (`assets/sprites/`)
   into the binary via `include_str!`/`include_bytes!`. The runtime decodes sprites and

@@ -57,6 +57,17 @@ pub struct EnemySpawn {
     pub row: i32,
 }
 
+/// A combatant in a room's **arena** (its `fog_wall` list). These spawn only once the
+/// player enters the room, and crossing the fog seals the exits until all are dead
+/// (see [`crate::boss`]). `boss` picks a boss over a normal enemy of `kind`.
+#[derive(Clone)]
+pub struct ArenaSpawn {
+    pub boss: bool,
+    pub kind: usize,
+    pub col: i32,
+    pub row: i32,
+}
+
 /// One map's data, read from a `.map.ron` file by [`MapLoader`].
 #[derive(Asset, TypePath, Clone)]
 pub struct MapData {
@@ -80,6 +91,9 @@ pub struct MapData {
     pub teleports: Vec<Teleport>,
     /// Per-cell enemy types for `E` glyphs (cells without an entry use kind 0).
     pub enemies: Vec<EnemySpawn>,
+    /// Arena combatants (empty = not an arena). Spawn on entry; crossing the room's
+    /// fog (`F` glyphs) seals the exits until all of these are dead.
+    pub fog_wall: Vec<ArenaSpawn>,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -147,6 +161,26 @@ impl MapData {
             None => Vec::new(),
         };
 
+        let fog_wall = match value.try_field("fog_wall") {
+            Some(list) => list
+                .as_list()?
+                .iter()
+                .map(|c| {
+                    Ok(ArenaSpawn {
+                        boss: c
+                            .try_field("boss")
+                            .and_then(|v| v.as_i32().ok())
+                            .unwrap_or(0)
+                            != 0,
+                        kind: c.field("kind")?.as_i32()?.max(0) as usize,
+                        col: c.field("col")?.as_i32()?,
+                        row: c.field("row")?.as_i32()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, RonError>>()?,
+            None => Vec::new(),
+        };
+
         Ok(MapData {
             name: optional_str("name")?,
             solid: value.field("solid")?.as_str()?.to_string(),
@@ -158,6 +192,7 @@ impl MapData {
             west: optional_str("west")?,
             teleports,
             enemies,
+            fog_wall,
             bg,
             tiles,
         })
@@ -203,10 +238,24 @@ impl MapData {
                 )
             })
             .collect();
+        let fog_wall: String = self
+            .fog_wall
+            .iter()
+            .map(|c| {
+                format!(
+                    "        (boss: {}, kind: {}, col: {}, row: {}),\n",
+                    i32::from(c.boss),
+                    c.kind,
+                    c.col,
+                    c.row
+                )
+            })
+            .collect();
         format!(
             "(\n    name: \"{}\",\n    solid: \"{}\",\n    spikes: \"{}\",\n    rocks: \"{}\",\n    \
              north: \"{}\",\n    south: \"{}\",\n    east: \"{}\",\n    west: \"{}\",\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
+             fog_wall: [\n{fog_wall}    ],\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
@@ -317,6 +366,10 @@ pub(crate) const ENEMY_GLYPH: char = 'E';
 /// Grid glyph marking a bench: a checkpoint that saves the game, refills hearts,
 /// resets enemies, and becomes the player's respawn point.
 pub(crate) const BENCH_GLYPH: char = 'B';
+/// Grid glyph for a **fog wall** cell: the mist marking an arena's threshold.
+/// Entering a room whose `fog_wall` lists combatants seals the exits until they're all
+/// dead (see [`crate::boss`]); the `F` cells just draw the mist.
+pub(crate) const FOG_GLYPH: char = 'F';
 /// Half-extents of a bench's "rest" trigger area.
 const BENCH_HALF: Vec2 = Vec2::new(TILE * 0.5, TILE * 0.5);
 
@@ -364,6 +417,7 @@ pub(crate) struct GameAssets {
     pub(crate) enemy_sheets: Vec<Handle<Image>>,
     pub(crate) orb: Handle<Image>,
     pub(crate) slash: Handle<Image>,
+    pub(crate) boss: Handle<Image>,
 }
 
 /// The room the player is currently in: its name, neighbours and pixel size.
@@ -497,6 +551,7 @@ impl Plugin for WorldPlugin {
                 (
                     handle_load_map,
                     tick_cooldown,
+                    confine_to_arena.in_set(GameSet::Transitions),
                     detect_transitions.in_set(GameSet::Transitions),
                     detect_teleport.in_set(GameSet::Transitions),
                     bench_interact.in_set(GameSet::Transitions),
@@ -543,6 +598,7 @@ fn load_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             .collect(),
         orb: embedded_sprite(&mut images, "orb.png"),
         slash: embedded_sprite(&mut images, "slash.png"),
+        boss: embedded_sprite(&mut images, "boss.png"),
     });
     commands.insert_resource(RockSprite(embedded_sprite(&mut images, "rock.png")));
 }
@@ -675,6 +731,24 @@ fn entry_position(entry: &Entry, room: Vec2, start: Vec2, teleport: Vec2) -> Vec
     }
 }
 
+/// Spawn one enemy of `kind` at `pos` (the kind's sheet + tint; `anim` attaches the
+/// atlas, `combat` drives the AI). Shared by the `E` glyph and arena combatants.
+fn spawn_enemy(commands: &mut Commands, assets: &GameAssets, kind: usize, pos: Vec2) {
+    let kind = kind.min(ENEMY_KINDS.len() - 1);
+    commands.spawn((
+        MapEntity,
+        Enemy::new(kind),
+        Hazard { half: ENEMY_HALF },
+        Sprite {
+            image: assets.enemy_sheets[kind].clone(),
+            color: ENEMY_KINDS[kind].color,
+            custom_size: Some(Vec2::splat(TILE)),
+            ..default()
+        },
+        Transform::from_xyz(pos.x, pos.y, 2.0),
+    ));
+}
+
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn handle_load_map(
     mut commands: Commands,
@@ -688,6 +762,8 @@ fn handle_load_map(
     mut respawn: ResMut<RespawnPoint>,
     mut armed: ResMut<TeleportArmed>,
     lost: Res<LostEnergy>,
+    cleared_bosses: Res<crate::boss::ClearedBosses>,
+    mut boss_fight: ResMut<crate::boss::BossFight>,
     existing: Query<Entity, With<MapEntity>>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
 ) {
@@ -718,6 +794,9 @@ fn handle_load_map(
         .max()
         .unwrap_or(0) as i32;
     let mut start_pos = Vec2::new(2.0 * TILE, 2.0 * TILE);
+    // An arena arms on entry unless this room's boss has already been beaten.
+    let is_cleared = map.fog_wall.iter().any(|c| c.boss) && cleared_bosses.0.contains(&load.map);
+    let arena_armed = !map.fog_wall.is_empty() && !is_cleared;
 
     for (r, line) in map.tiles.iter().enumerate() {
         let row = height - 1 - r as i32; // flip so row 0 is the top, y points up
@@ -737,22 +816,8 @@ fn handle_load_map(
                     .enemies
                     .iter()
                     .find(|e| e.col == col && e.row == r as i32)
-                    .map_or(0, |e| e.kind)
-                    .min(ENEMY_KINDS.len() - 1);
-                // Spawn with the kind's sheet + tint; `anim` attaches the atlas +
-                // animation, and `combat` drives the AI.
-                commands.spawn((
-                    MapEntity,
-                    Enemy::new(kind),
-                    Hazard { half: ENEMY_HALF },
-                    Sprite {
-                        image: assets.enemy_sheets[kind].clone(),
-                        color: ENEMY_KINDS[kind].color,
-                        custom_size: Some(Vec2::splat(TILE)),
-                        ..default()
-                    },
-                    Transform::from_xyz(center.x, center.y, 2.0),
-                ));
+                    .map_or(0, |e| e.kind);
+                spawn_enemy(&mut commands, &assets, kind, center);
             } else if ch == BENCH_GLYPH {
                 commands.spawn((
                     MapEntity,
@@ -764,6 +829,12 @@ fn handle_load_map(
                     },
                     Transform::from_xyz(center.x, center.y, 1.0),
                 ));
+            } else if ch == FOG_GLYPH {
+                // The mist is purely visual (you walk through it); the seal is the
+                // locked exits below. Only show it while the arena is live.
+                if arena_armed {
+                    crate::boss::spawn_fog_cell(&mut commands, center);
+                }
             } else if map.solid.contains(ch) {
                 solids.0.insert((col, row));
                 commands.spawn((
@@ -842,6 +913,24 @@ fn handle_load_map(
         ));
     }
 
+    // Arm the arena: spawn its combatants (hidden until you got here) and seal the
+    // exits. They were cleared above with the room, so a death/leave resets the fight.
+    boss_fight.locked = arena_armed;
+    if arena_armed {
+        for spawn in &map.fog_wall {
+            let world_row = height - 1 - spawn.row;
+            let pos = Vec2::new(
+                spawn.col as f32 * TILE + TILE / 2.0,
+                world_row as f32 * TILE + TILE / 2.0,
+            );
+            if spawn.boss {
+                crate::boss::spawn_boss_at(&mut commands, &assets, spawn.kind, pos);
+            } else {
+                spawn_enemy(&mut commands, &assets, spawn.kind, pos);
+            }
+        }
+    }
+
     // Resolve a destination cell (teleporter or bench; grid coords, row 0 = top) to
     // a world centre, flipping the row so y points up. Out-of-range falls to `start`.
     let teleport_pos = match load.entry {
@@ -894,10 +983,15 @@ fn tick_cooldown(time: Res<Time>, mut cooldown: ResMut<TransitionCooldown>) {
 fn detect_transitions(
     cooldown: Res<TransitionCooldown>,
     current: Res<CurrentRoom>,
+    boss_fight: Res<crate::boss::BossFight>,
     player: Query<&Transform, With<Player>>,
     mut load: MessageWriter<LoadMap>,
     mut hurt: MessageWriter<Hurt>,
 ) {
+    // The fog gate seals the arena: no leaving (or falling out) mid-fight.
+    if boss_fight.locked {
+        return;
+    }
     let Ok(transform) = player.single() else {
         return;
     };
@@ -932,6 +1026,29 @@ fn detect_transitions(
     if pos.y < -TILE && current.south.is_none() {
         hurt.write(Hurt::Pit);
     }
+}
+
+/// While the boss arena is sealed, keep the player inside the room: the locked exits
+/// leave door openings they could otherwise walk or fall out through.
+fn confine_to_arena(
+    boss_fight: Res<crate::boss::BossFight>,
+    current: Res<CurrentRoom>,
+    mut player: Query<&mut Transform, With<Player>>,
+) {
+    if !boss_fight.locked {
+        return;
+    }
+    let Ok(mut transform) = player.single_mut() else {
+        return;
+    };
+    let room = current.size;
+    transform.translation.x = transform
+        .translation
+        .x
+        .clamp(PLAYER_HALF.x, (room.x - PLAYER_HALF.x).max(PLAYER_HALF.x));
+    // Floor level (one tile of border + the player's half height): catches a fall
+    // through the arena's door gap and sets them back on the floor.
+    transform.translation.y = transform.translation.y.max(TILE + PLAYER_HALF.y);
 }
 
 /// Send the player to a linked room when they step onto a teleporter pad. A pad
@@ -1070,6 +1187,7 @@ mod tests {
             "orb.png",
             "slash.png",
             "rock.png",
+            "boss.png",
         ];
         wanted.extend(ENEMY_KINDS.iter().map(|k| k.sheet));
         let mut images = Assets::<Image>::default();
@@ -1193,6 +1311,12 @@ mod tests {
                 col: 2,
                 row: 2,
             }],
+            fog_wall: vec![ArenaSpawn {
+                boss: true,
+                kind: 0,
+                col: 5,
+                row: 6,
+            }],
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
@@ -1220,5 +1344,9 @@ mod tests {
         assert_eq!(parsed.enemies[0].kind, 1);
         assert_eq!(parsed.enemies[0].col, 2);
         assert_eq!(parsed.enemies[0].row, 2);
+        assert_eq!(parsed.fog_wall.len(), 1);
+        assert!(parsed.fog_wall[0].boss);
+        assert_eq!(parsed.fog_wall[0].col, 5);
+        assert_eq!(parsed.fog_wall[0].row, 6);
     }
 }

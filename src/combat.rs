@@ -16,6 +16,7 @@ use bevy::prelude::*;
 
 use crate::GameSet;
 use crate::anim::{Clip, Playback};
+use crate::boss::{BOSS_HALF, Boss, BossFight};
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
 use crate::player::{PLAYER_HALF, Player};
@@ -493,10 +494,12 @@ fn player_attack(
     intent: Res<PlayerIntent>,
     assets: Res<GameAssets>,
     stats: Res<Stats>,
+    fight: Res<BossFight>,
     mut sword: ResMut<Sword>,
     mut commands: Commands,
     player: Query<(&Transform, &Sprite), With<Player>>,
     mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Player>>,
+    mut bosses: Query<(Entity, &Transform, &mut Boss), Without<Player>>,
 ) {
     let dt = time.delta_secs();
     sword.cooldown = (sword.cooldown - dt).max(0.0);
@@ -562,6 +565,21 @@ fn player_attack(
                     "hit enemy kind {} for {} ({} hp left)",
                     enemy.kind, damage, enemy.health
                 );
+            }
+        }
+
+        // The boss is only vulnerable once the fight is underway.
+        if fight.locked {
+            for (entity, boss_tf, mut boss) in &mut bosses {
+                if sword.hit.contains(&entity) {
+                    continue;
+                }
+                let delta = (boss_tf.translation.truncate() - hit_center).abs();
+                if delta.x < HIT_HALF.x + BOSS_HALF.x && delta.y < HIT_HALF.y + BOSS_HALF.y {
+                    boss.health -= damage;
+                    boss.flash = 0.12;
+                    sword.hit.insert(entity);
+                }
             }
         }
     }

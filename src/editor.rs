@@ -26,8 +26,8 @@ use crate::menu::Paused;
 use crate::save::{GameMode, Save};
 use crate::state::GameState;
 use crate::world::{
-    BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, EnemySpawn, GameAssets, LevelRoot, MapData,
-    START_MARKER, Teleport, map_fs_path,
+    ArenaSpawn, BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
+    LevelRoot, MapData, START_MARKER, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -36,16 +36,20 @@ use crate::worldmap::MapView;
 const PORTAL_BRUSH: char = 'P';
 
 /// The paint brushes, by the grid character they write.
-const BRUSHES: [(char, &str); 8] = [
+const BRUSHES: [(char, &str); 9] = [
     ('#', "Wall"),
     ('^', "Spike"),
     ('R', "Rock"),
     (START_MARKER, "Start"),
     (ENEMY_GLYPH, "Enemy"),
     (BENCH_GLYPH, "Bench"),
+    (FOG_GLYPH, "Fog"),
     (PORTAL_BRUSH, "Portal"),
     ('.', "Erase"),
 ];
+
+/// Editor colour for a fog-wall cell.
+const FOG_COLOR: Color = Color::srgba(0.55, 0.4, 0.85, 0.7);
 
 /// Editor colour for a teleporter pad (matches the in-game pad).
 const PORTAL_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
@@ -93,6 +97,7 @@ struct EditBuffer {
     west: String,
     teleports: Vec<Teleport>, // coordinate-based portals (see the Portal brush)
     enemies: Vec<EnemySpawn>, // per-cell enemy types (preserved across edits)
+    fog_wall: Vec<ArenaSpawn>, // arena combatants (hand-authored; preserved across edits)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -472,6 +477,8 @@ fn draw_tiles(
                 ));
             } else if ch == BENCH_GLYPH {
                 box_at(commands, pos, Vec2::splat(tile * 0.9), 152.0, BENCH_COLOR);
+            } else if ch == FOG_GLYPH {
+                box_at(commands, pos, Vec2::splat(tile), 152.0, FOG_COLOR);
             }
         }
     }
@@ -1151,6 +1158,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         west: String::new(),
         teleports: Vec::new(),
         enemies: Vec::new(),
+        fog_wall: Vec::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -1208,6 +1216,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         west: String::new(),
         teleports: Vec::new(),
         enemies: Vec::new(),
+        fog_wall: Vec::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -1282,6 +1291,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         west: map.west.clone(),
         teleports: map.teleports.clone(),
         enemies: map.enemies.clone(),
+        fog_wall: map.fog_wall.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1315,6 +1325,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         west: buffer.west.clone(),
         teleports: buffer.teleports.clone(),
         enemies,
+        fog_wall: buffer.fog_wall.clone(), // preserved across edits (hand-authored)
         bg: buffer.bg,
         tiles: buffer
             .grid
