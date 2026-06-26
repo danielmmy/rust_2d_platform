@@ -239,7 +239,7 @@ fn edit_tiles(
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<EditorEntity>>,
 ) {
-    let root = level_root.0.clone();
+    let root = level_root.dir().unwrap_or_default().to_string();
     let center = camera_center(&camera);
     // Always drain typed keys (so none are stale when rename mode begins).
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
@@ -585,7 +585,7 @@ fn edit_rooms(
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<EditorEntity>>,
 ) {
-    let root = level_root.0.clone();
+    let root = level_root.dir().unwrap_or_default().to_string();
     let center = camera_center(&camera);
 
     // Choosing a portal's destination room: a focused mode with no other room ops.

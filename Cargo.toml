@@ -2,6 +2,9 @@
 name = "wisp"
 version = "0.1.0"
 edition = "2024"
+# Bakes assets/maps + assets/sprites into the binary (see build.rs) so a release
+# build is self-contained — no `assets/` folder needed at runtime.
+build = "build.rs"
 
 [dependencies]
 bevy = "0.19"

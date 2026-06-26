@@ -22,8 +22,7 @@ use crate::save::{self, GameMode, SLOTS, Save};
 use crate::state::GameState;
 use crate::stats::{Stats, character_lines};
 use crate::world::{
-    LevelRoot, PendingSpawn, SHIPPED_MAPS_DIR, START_MAP, SpawnRequest, builder_maps_dir,
-    init_builder_world,
+    LevelRoot, PendingSpawn, START_MAP, SpawnRequest, builder_maps_dir, init_builder_world,
 };
 use crate::worldmap::MapView;
 
@@ -301,9 +300,9 @@ fn start_new_game(
     level_root: &mut LevelRoot,
     game_state: &mut NextState<GameState>,
 ) {
-    level_root.0 = match mode {
-        GameMode::Story => SHIPPED_MAPS_DIR.to_string(),
-        GameMode::Builder => init_builder_world(slot),
+    *level_root = match mode {
+        GameMode::Story => LevelRoot::Story,
+        GameMode::Builder => LevelRoot::Builder(init_builder_world(slot)),
     };
     let fresh = Save {
         slot,
@@ -469,9 +468,9 @@ fn main_menu_update(
                         loaded.room.clone()
                     };
                     // Point the level loader at this save's world.
-                    level_root.0 = match loaded.mode {
-                        GameMode::Story => SHIPPED_MAPS_DIR.to_string(),
-                        GameMode::Builder => builder_maps_dir(slot),
+                    *level_root = match loaded.mode {
+                        GameMode::Story => LevelRoot::Story,
+                        GameMode::Builder => LevelRoot::Builder(builder_maps_dir(slot)),
                     };
                     pending.0 = Some(SpawnRequest { room, at_cell });
                     *save_res = loaded;

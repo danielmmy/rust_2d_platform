@@ -247,7 +247,8 @@ link controls**: connectivity is derived from the grid, so a room named
 `r{col}_{row}` is linked to its existing N/S/E/W neighbours automatically, and
 standard-size (40×22) rooms get their doors opened/sealed to match. Rooms can still
 be **any size** in the tile view, but a custom-sized room manages its own doors.
-The builder is `#[cfg(debug_assertions)]`, so it's compiled out of `--release`.
+The builder edits a Builder save's own copy on disk; the shipped Story levels stay
+read-only.
 
 **Portals** — `Tab` to the **Portal** brush and paint to drop the first endpoint;
 the room manager opens so you can pick the destination room (`Enter`) — **including
@@ -265,6 +266,10 @@ refilling hearts, and resetting enemies; it's also where the player respawns aft
 losing all hearts.
 
 ### Replace the art
+
+The shipped sprites and Story levels are **baked into the binary** at build time (see
+[`build.rs`](build.rs)), so a release exe is self-contained — no `assets/` folder
+needed to run. Edit the source files and **rebuild** to embed the new versions.
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
 (`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `flyer.png`,
@@ -301,6 +306,13 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Made release builds **self-contained**: a [`build.rs`](build.rs)
+  bakes the **Story levels** (`assets/maps/`) and **all sprites** (`assets/sprites/`)
+  into the binary via `include_str!`/`include_bytes!`. The runtime decodes sprites and
+  parses the Story campaign straight from the embedded bytes (no `assets/` folder
+  needed to run); new Builder saves seed their editable copy from the embedded levels
+  too. `LevelRoot` is now `Story` (embedded) or `Builder(dir)` (on disk). A test
+  asserts every shipped room parses and every sprite decodes from the embed.
 - **2026-06-26** — Reset the shipped **Story campaign** (`assets/maps/`) to the clean
   **default 12-room world** — the same one the builder's Reset generates — as a fresh
   baseline to design on. Regenerate it any time with
