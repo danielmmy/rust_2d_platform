@@ -410,6 +410,7 @@ fn update_overlay(
     mut health: ResMut<Health>,
     mut save: ResMut<Save>,
     lost: Res<LostEnergy>,
+    mut arenas: ResMut<crate::boss::ClearedArenas>,
     mut next: ResMut<NextState<CharMenu>>,
     mut load: MessageWriter<LoadMap>,
     mut lines: Query<(&Line, &mut Text2d, &mut TextColor)>,
@@ -454,6 +455,8 @@ fn update_overlay(
                     save.bench_col = col;
                     save.bench_row = row;
                     write_progress(&mut save, &energy, &stats, &lost);
+                    // Resting re-arms every non-boss arena (their foes respawn).
+                    arenas.0.clear();
                     // Reload the room so enemies respawn and the player lands on the bench.
                     load.write(LoadMap {
                         map: current.name.clone(),

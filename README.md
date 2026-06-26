@@ -143,10 +143,14 @@ top) and cycles three attacks — a **slam** leap, a **fan of throwables**, and
 **summoning** lesser foes — turning more aggressive past half health. Beat it (and any
 companions) for a big **energy** payout and a permanent new ability: the **double
 jump** (a second jump in mid-air — press jump again while airborne). The default world
-ships two: the original in `r0_1` and the red brute in the far corner `r3_2`. Each is
-**cleared independently** and persists, so a beaten boss never returns. Die and the
-arena resets for another attempt (your dropped energy waits inside). Author your own by
-editing a room's `fog_wall` list (and painting **Fog** cells for the mist) — see
+ships two: the original boss in `r0_1` and the red brute in the far corner `r3_2`. Each
+is **cleared independently**. Whether an arena comes back is set by its **`fog_respawn`**
+flag: with `fog_respawn: 1` it **re-arms on a bench rest** (a transient win, so its foes
+respawn — e.g. the three patrollers in `r1_1`); left out (the default) the clear is
+**permanent**. A **beaten boss persists** regardless — its kill is saved for the reward —
+so the boss arenas stay cleared for good. Die and a live arena resets for another attempt
+(your dropped energy waits inside). Author your own by editing a room's `fog_wall` list,
+setting `fog_respawn` to taste, and painting **Fog** cells for the mist — see
 [`r0_1.map.ron`](assets/maps/r0_1.map.ron).
 
 ## Extending it
@@ -325,6 +329,16 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Generalised arena respawning into a per-room **`fog_respawn`** flag
+  ([`MapData`](src/world.rs), mirrored into [`BossFight::respawn`](src/boss.rs)). An arena
+  with `fog_respawn: 1` re-arms on the next **bench rest** (transient `ClearedArenas`);
+  without it the clear is **permanent** (persisted `ClearedBosses`). Replaces the previous
+  implicit rule (boss → permanent, boss-less → transient); `r1_1` now sets the flag
+  explicitly. The flag is parsed/serialised and preserved by the editor.
+- **2026-06-26** — Added a **non-boss arena** to `r1_1` (three patrollers) and made
+  enemy arenas **respawn on bench rest**: an arena's foes now stay cleared only until
+  the next bench (a transient `ClearedArenas` set, wiped on rest), while beaten **bosses
+  persist**. (Previously enemy arenas re-armed on every entry.)
 - **2026-06-26** — Added **boss types** ([`BOSS_KINDS`](src/boss.rs)): a `fog_wall` boss
   entry's `kind` now picks one (`0` original, `1` a **red, double-health** brute). The
   original boss moved to `r0_1` and the red brute holds `r3_2`. Bosses are now cleared

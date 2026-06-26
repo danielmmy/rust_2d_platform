@@ -142,6 +142,11 @@ struct BossProjectile {
 #[derive(Resource, Default)]
 pub(crate) struct BossFight {
     pub(crate) locked: bool,
+    /// Whether the live arena re-arms on a bench rest (set from the room's
+    /// `fog_respawn` flag). When `true`, clearing it only records a *transient*
+    /// win ([`ClearedArenas`]); when `false`, the win is *permanent*
+    /// ([`ClearedBosses`], persisted).
+    pub(crate) respawn: bool,
 }
 
 /// The rooms whose boss has been beaten (so it doesn't respawn). Synced from the
@@ -149,12 +154,20 @@ pub(crate) struct BossFight {
 #[derive(Resource, Default)]
 pub(crate) struct ClearedBosses(pub(crate) HashSet<String>);
 
+/// Arenas cleared **this checkpoint** — every arena lands here when won, but this set
+/// is wiped on rest at a bench, so non-boss arenas re-arm (their foes respawn). Not
+/// persisted: a fresh session re-arms them all. (Boss arenas also live in
+/// [`ClearedBosses`], which a bench rest does *not* clear — bosses stay dead.)
+#[derive(Resource, Default)]
+pub(crate) struct ClearedArenas(pub(crate) HashSet<String>);
+
 pub struct BossPlugin;
 
 impl Plugin for BossPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BossFight>()
             .init_resource::<ClearedBosses>()
+            .init_resource::<ClearedArenas>()
             .add_systems(
                 OnEnter(GameState::Playing),
                 (apply_boss_save, spawn_boss_hud),
@@ -171,14 +184,20 @@ impl Plugin for BossPlugin {
     }
 }
 
-/// Pull the set of already-beaten boss rooms from the save when a game starts.
-fn apply_boss_save(save: Res<Save>, mut cleared: ResMut<ClearedBosses>) {
+/// Pull the set of already-beaten boss rooms from the save when a game starts, and
+/// start the session with every non-boss arena live again.
+fn apply_boss_save(
+    save: Res<Save>,
+    mut cleared: ResMut<ClearedBosses>,
+    mut session: ResMut<ClearedArenas>,
+) {
     cleared.0 = save
         .cleared_bosses
         .split(',')
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect();
+    session.0.clear();
 }
 
 /// Spawn a boss of `kind` at `pos`, already awake and lethal — it's only spawned into
@@ -227,16 +246,36 @@ pub(crate) fn spawn_fog_cell(commands: &mut Commands, center: Vec2) {
 }
 
 /// The arena is cleared when every combatant (the boss and all enemies) is dead:
-/// unlock the exits and lift the mist.
+/// unlock the exits and lift the mist. How the win is *recorded* depends on the room's
+/// `fog_respawn` flag (mirrored into [`BossFight::respawn`]): a respawning arena lands in
+/// the transient [`ClearedArenas`] (re-arms on the next bench rest), while a permanent one
+/// is persisted in [`ClearedBosses`] (stays cleared forever). A boss arena is permanent and
+/// is *also* recorded by [`boss_death`], so the persist here is guarded to run at most once.
+#[allow(clippy::too_many_arguments)] // distinct resources for the two record paths
 fn arena_clear(
     mut commands: Commands,
     mut fight: ResMut<BossFight>,
+    mut session: ResMut<ClearedArenas>,
+    mut cleared: ResMut<ClearedBosses>,
+    mut save: ResMut<Save>,
+    energy: Res<Energy>,
+    stats: Res<Stats>,
+    lost: Res<LostEnergy>,
+    current: Res<CurrentRoom>,
     bosses: Query<(), With<Boss>>,
     enemies: Query<(), With<Enemy>>,
     fog: Query<Entity, With<FogGate>>,
 ) {
     if fight.locked && bosses.is_empty() && enemies.is_empty() {
         fight.locked = false;
+        if fight.respawn {
+            // Transient: wiped on the next bench rest, so the foes respawn.
+            session.0.insert(current.name.clone());
+        } else if cleared.0.insert(current.name.clone()) {
+            // Permanent: persist it (skipped if `boss_death` already recorded this room).
+            save.cleared_bosses = cleared.0.iter().cloned().collect::<Vec<_>>().join(",");
+            stats::write_progress(&mut save, &energy, &stats, &lost);
+        }
         for cell in &fog {
             commands.entity(cell).despawn();
         }

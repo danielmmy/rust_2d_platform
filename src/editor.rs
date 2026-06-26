@@ -98,6 +98,7 @@ struct EditBuffer {
     teleports: Vec<Teleport>, // coordinate-based portals (see the Portal brush)
     enemies: Vec<EnemySpawn>, // per-cell enemy types (preserved across edits)
     fog_wall: Vec<ArenaSpawn>, // arena combatants (hand-authored; preserved across edits)
+    fog_respawn: bool,        // arena re-arms on bench rest (preserved across edits)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -1159,6 +1160,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         teleports: Vec::new(),
         enemies: Vec::new(),
         fog_wall: Vec::new(),
+        fog_respawn: false,
         bg,
         tiles: grid
             .into_iter()
@@ -1217,6 +1219,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         teleports: Vec::new(),
         enemies: Vec::new(),
         fog_wall: Vec::new(),
+        fog_respawn: false,
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -1292,6 +1295,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         teleports: map.teleports.clone(),
         enemies: map.enemies.clone(),
         fog_wall: map.fog_wall.clone(),
+        fog_respawn: map.fog_respawn,
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1326,6 +1330,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         teleports: buffer.teleports.clone(),
         enemies,
         fog_wall: buffer.fog_wall.clone(), // preserved across edits (hand-authored)
+        fog_respawn: buffer.fog_respawn,   // preserved across edits (hand-authored)
         bg: buffer.bg,
         tiles: buffer
             .grid

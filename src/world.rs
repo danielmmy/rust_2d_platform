@@ -94,6 +94,9 @@ pub struct MapData {
     /// Arena combatants (empty = not an arena). Spawn on entry; crossing the room's
     /// fog (`F` glyphs) seals the exits until all of these are dead.
     pub fog_wall: Vec<ArenaSpawn>,
+    /// If set, this arena **re-arms on a bench rest** (its foes respawn); otherwise it
+    /// stays cleared permanently. Bosses persist regardless (their kill is saved).
+    pub fog_respawn: bool,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -181,6 +184,12 @@ impl MapData {
             None => Vec::new(),
         };
 
+        let fog_respawn = value
+            .try_field("fog_respawn")
+            .and_then(|v| v.as_i32().ok())
+            .unwrap_or(0)
+            != 0;
+
         Ok(MapData {
             name: optional_str("name")?,
             solid: value.field("solid")?.as_str()?.to_string(),
@@ -193,6 +202,7 @@ impl MapData {
             teleports,
             enemies,
             fog_wall,
+            fog_respawn,
             bg,
             tiles,
         })
@@ -255,7 +265,7 @@ impl MapData {
             "(\n    name: \"{}\",\n    solid: \"{}\",\n    spikes: \"{}\",\n    rocks: \"{}\",\n    \
              north: \"{}\",\n    south: \"{}\",\n    east: \"{}\",\n    west: \"{}\",\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
-             fog_wall: [\n{fog_wall}    ],\n    \
+             fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
@@ -265,6 +275,7 @@ impl MapData {
             self.south,
             self.east,
             self.west,
+            i32::from(self.fog_respawn),
             self.bg[0],
             self.bg[1],
             self.bg[2],
@@ -763,6 +774,7 @@ fn handle_load_map(
     mut armed: ResMut<TeleportArmed>,
     lost: Res<LostEnergy>,
     cleared_bosses: Res<crate::boss::ClearedBosses>,
+    cleared_arenas: Res<crate::boss::ClearedArenas>,
     mut boss_fight: ResMut<crate::boss::BossFight>,
     existing: Query<Entity, With<MapEntity>>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
@@ -794,8 +806,9 @@ fn handle_load_map(
         .max()
         .unwrap_or(0) as i32;
     let mut start_pos = Vec2::new(2.0 * TILE, 2.0 * TILE);
-    // An arena arms on entry unless this room's boss has already been beaten.
-    let is_cleared = map.fog_wall.iter().any(|c| c.boss) && cleared_bosses.0.contains(&load.map);
+    // An arena arms on entry unless it's already cleared — permanently (a beaten boss)
+    // or just for this checkpoint (any arena, until the next bench rest).
+    let is_cleared = cleared_bosses.0.contains(&load.map) || cleared_arenas.0.contains(&load.map);
     let arena_armed = !map.fog_wall.is_empty() && !is_cleared;
 
     for (r, line) in map.tiles.iter().enumerate() {
@@ -916,6 +929,7 @@ fn handle_load_map(
     // Arm the arena: spawn its combatants (hidden until you got here) and seal the
     // exits. They were cleared above with the room, so a death/leave resets the fight.
     boss_fight.locked = arena_armed;
+    boss_fight.respawn = map.fog_respawn;
     if arena_armed {
         for spawn in &map.fog_wall {
             let world_row = height - 1 - spawn.row;
@@ -1317,6 +1331,7 @@ mod tests {
                 col: 5,
                 row: 6,
             }],
+            fog_respawn: true,
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
