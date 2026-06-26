@@ -19,6 +19,7 @@ use bevy::prelude::*;
 use crate::GameSet;
 use crate::hazards::{Hazard, RespawnPoint, Rock, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
+use crate::input::PlayerIntent;
 use crate::physics::{Solids, TILE};
 use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
@@ -284,16 +285,9 @@ struct Bench {
     row: i32,
 }
 
-/// Whether the player has stepped clear of every bench since last resting, so a
-/// bench rests once on contact rather than every frame.
-#[derive(Resource)]
-struct BenchReady(bool);
-
-impl Default for BenchReady {
-    fn default() -> Self {
-        Self(true)
-    }
-}
+/// The "press to rest" prompt shown above a bench the player is standing on.
+#[derive(Component)]
+struct BenchPrompt;
 
 /// A menu-driven request for where to spawn when `Playing` next begins: the room,
 /// and an optional bench cell (else the room's start marker). Consumed by
@@ -407,11 +401,14 @@ impl Plugin for WorldPlugin {
             .init_resource::<CurrentRoom>()
             .init_resource::<RoomView>()
             .init_resource::<TeleportArmed>()
-            .init_resource::<BenchReady>()
             .init_resource::<PendingSpawn>()
             .add_systems(Startup, load_assets)
             .add_systems(Update, wait_for_load.run_if(in_state(GameState::Loading)))
-            .add_systems(OnEnter(GameState::Playing), enter_playing)
+            .add_systems(
+                OnEnter(GameState::Playing),
+                (enter_playing, spawn_bench_prompt),
+            )
+            .add_systems(OnExit(GameState::Playing), despawn_bench_prompt)
             .add_systems(
                 Update,
                 (
@@ -419,7 +416,7 @@ impl Plugin for WorldPlugin {
                     tick_cooldown,
                     detect_transitions.in_set(GameSet::Transitions),
                     detect_teleport.in_set(GameSet::Transitions),
-                    rest_at_bench.in_set(GameSet::Transitions),
+                    bench_interact.in_set(GameSet::Transitions),
                 )
                     .run_if(in_state(GameState::Playing)),
             );
@@ -797,49 +794,81 @@ fn detect_teleport(
     }
 }
 
-/// Rest at a bench on contact: refill hearts, clear in-flight enemies, and record
-/// the bench as the save + respawn point (persisted to disk). Re-arms once the
-/// player steps clear, so it fires once per visit.
+/// Show a prompt above a bench the player is standing on, and — when they press
+/// **interact** there — rest: refill hearts, clear in-flight enemies, and record
+/// the bench as the save + respawn point (persisted to disk).
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
-fn rest_at_bench(
+fn bench_interact(
     mut commands: Commands,
-    mut ready: ResMut<BenchReady>,
+    intent: Res<PlayerIntent>,
     mut save: ResMut<Save>,
     mut health: ResMut<Health>,
     current: Res<CurrentRoom>,
-    benches: Query<(&Transform, &Bench)>,
+    benches: Query<(&Transform, &Bench), Without<BenchPrompt>>,
     rocks: Query<Entity, With<Rock>>,
-    player: Query<&Transform, With<Player>>,
+    player: Query<&Transform, (With<Player>, Without<BenchPrompt>)>,
+    mut prompt: Query<(&mut Transform, &mut Visibility), With<BenchPrompt>>,
 ) {
     let Ok(player_tf) = player.single() else {
         return;
     };
     let player_pos = player_tf.translation.truncate();
 
-    let on_bench = benches.iter().find_map(|(tf, bench)| {
+    // The bench the player is standing on, if any.
+    let on_bench = benches.iter().find(|(tf, _)| {
         let delta = (tf.translation.truncate() - player_pos).abs();
-        let touching =
-            delta.x < BENCH_HALF.x + PLAYER_HALF.x && delta.y < BENCH_HALF.y + PLAYER_HALF.y;
-        touching.then_some((bench.col, bench.row))
+        delta.x < BENCH_HALF.x + PLAYER_HALF.x && delta.y < BENCH_HALF.y + PLAYER_HALF.y
     });
 
-    match on_bench {
-        // Clear of every bench → ready to rest at the next one touched.
-        None => ready.0 = true,
-        // Touched a bench → rest: heal, checkpoint, save, and reset enemies.
-        Some((col, row)) if ready.0 => {
-            ready.0 = false;
-            health.current = health.max;
-            save.room = current.name.clone();
-            save.bench_room = current.name.clone();
-            save.bench_col = col;
-            save.bench_row = row;
-            save::write_save(&save);
-            for entity in &rocks {
-                commands.entity(entity).despawn();
+    // Show the "rest" prompt above that bench, or hide it.
+    if let Ok((mut prompt_tf, mut visibility)) = prompt.single_mut() {
+        match on_bench {
+            Some((tf, _)) => {
+                prompt_tf.translation.x = tf.translation.x;
+                prompt_tf.translation.y = tf.translation.y + TILE;
+                *visibility = Visibility::Visible;
             }
+            None => *visibility = Visibility::Hidden,
         }
-        Some(_) => {}
+    }
+
+    // Rest only on the interact press, while standing on a bench.
+    if intent.interact
+        && let Some((_, bench)) = on_bench
+    {
+        health.current = health.max;
+        save.room = current.name.clone();
+        save.bench_room = current.name.clone();
+        save.bench_col = bench.col;
+        save.bench_row = bench.row;
+        save::write_save(&save);
+        for entity in &rocks {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Spawn the (initially hidden) bench prompt; [`bench_interact`] positions it.
+fn spawn_bench_prompt(mut commands: Commands, existing: Query<(), With<BenchPrompt>>) {
+    if !existing.is_empty() {
+        return;
+    }
+    commands.spawn((
+        BenchPrompt,
+        Text2d::new("[E] rest"),
+        TextFont {
+            font_size: FontSize::Px(16.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.96, 0.9, 0.6)),
+        Transform::from_xyz(0.0, 0.0, 20.0),
+        Visibility::Hidden,
+    ));
+}
+
+fn despawn_bench_prompt(mut commands: Commands, prompts: Query<Entity, With<BenchPrompt>>) {
+    for entity in &prompts {
+        commands.entity(entity).despawn();
     }
 }
 

@@ -20,6 +20,7 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | --- | --- | --- |
 | Move | `A`/`D` or `←`/`→` | left stick / D-pad |
 | Jump / confirm | `Space`, `W`, `↑`, `Z`, or `Enter` | `A` (south) |
+| Interact (rest at bench) | `E` | `Y` (north) |
 | World map | `M` | `Start` |
 | Pause | `Esc` | `Select` |
 
@@ -70,10 +71,11 @@ avoidable: **ground spikes** in dead-end corners and **falling rocks** in the
 open. Touching one costs a **heart** (with brief invulnerability) and bounces you
 to the room's entrance; lose all three hearts and you respawn at the last bench.
 
-**Benches** are checkpoints — the start room has one. Rest on a bench to **save**
-your game, **refill** your hearts, and **reset** the room's enemies; the bench you
-last rested at is where death returns you. Benches show on the world map as warm
-cells.
+**Benches** are checkpoints — the start room has one. Stand on a bench and press
+**`E`** (gamepad **`Y`**) — a **`[E] rest`** prompt appears — to **save** your game,
+**refill** your hearts, and **reset** the room's enemies; the bench you last rested
+at is where death returns you. (Just walking over a bench does nothing.) Benches
+show on the world map as warm cells.
 
 Besides the edge doors, rooms can be wired together with **teleporters** — pads
 that link two distant rooms (or two spots in the same room) directly. Each pad
@@ -198,8 +200,9 @@ cell coordinates, so moving a pad's room doesn't update its partner — re-link 
 such a move.)
 
 **Benches** — `Tab` to the **Bench** brush and paint to place a checkpoint (the
-grid glyph `B`). Resting on it in play saves the game, refills hearts, and resets
-enemies; it's also where the player respawns after losing all hearts.
+grid glyph `B`). In play, stand on it and press `E` to rest — saving the game,
+refilling hearts, and resetting enemies; it's also where the player respawns after
+losing all hearts.
 
 ### Replace the art
 
@@ -217,6 +220,9 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Benches now require an **interact press** (`E` / gamepad `Y`)
+  to rest, instead of triggering when you walk over them; a `[E] rest` prompt shows
+  while you're standing on one.
 - **2026-06-25** — Replaced non-ASCII glyphs (`·`, `—`, `×`, `↔`, `−`) in on-screen
   text with ASCII, since Bevy's default font doesn't include them — menu, HUD, and
   builder labels now render fully.

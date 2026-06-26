@@ -14,6 +14,8 @@ pub struct PlayerIntent {
     pub jump_pressed: bool,
     /// Jump is currently held — feeds variable jump height.
     pub jump_held: bool,
+    /// Interact was pressed this frame (edge) — e.g. resting at a bench.
+    pub interact: bool,
 }
 
 pub struct InputPlugin;
@@ -46,6 +48,7 @@ fn gather(
     }
     let mut jump_pressed = keys.any_just_pressed(JUMP_KEYS);
     let mut jump_held = keys.any_pressed(JUMP_KEYS);
+    let mut interact = keys.just_pressed(KeyCode::KeyE);
 
     for gamepad in &gamepads {
         let stick = gamepad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
@@ -64,9 +67,13 @@ fn gather(
         if gamepad.pressed(GamepadButton::South) {
             jump_held = true;
         }
+        if gamepad.just_pressed(GamepadButton::North) {
+            interact = true;
+        }
     }
 
     intent.move_x = move_x.clamp(-1.0, 1.0);
     intent.jump_pressed = jump_pressed;
     intent.jump_held = jump_held;
+    intent.interact = interact;
 }
