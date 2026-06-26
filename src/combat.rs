@@ -23,8 +23,27 @@ use crate::world::{GameAssets, MapEntity};
 
 /// Half-extents of an enemy (collision + contact).
 pub(crate) const ENEMY_HALF: Vec2 = Vec2::new(10.0, 13.0);
-const ENEMY_HEALTH: i32 = 3;
 const ENEMY_SPEED: f32 = 56.0;
+
+/// A kind of enemy: its hit points and body colour (the one neutral sprite is
+/// tinted to this colour, so a new type needs no new art).
+pub(crate) struct EnemyKind {
+    pub(crate) health: i32,
+    pub(crate) color: Color,
+}
+
+/// The enemy types, indexed by the `kind` in a map's `enemies` array. Index 0 is
+/// the default when an `E` glyph has no matching entry. Extend this for more types.
+pub(crate) const ENEMY_KINDS: [EnemyKind; 2] = [
+    EnemyKind {
+        health: 3,
+        color: Color::srgb(0.70, 0.30, 0.64), // basic (purple)
+    },
+    EnemyKind {
+        health: 2,
+        color: Color::srgb(0.86, 0.27, 0.27), // red
+    },
+];
 const ENEMY_GRAVITY: f32 = 1400.0;
 const ENEMY_MAX_FALL: f32 = 800.0;
 
@@ -38,10 +57,10 @@ pub(crate) struct Enemy {
 }
 
 impl Enemy {
-    /// A fresh enemy walking right.
-    pub(crate) fn new() -> Self {
+    /// A fresh enemy walking right, with `health` hit points.
+    pub(crate) fn new(health: i32) -> Self {
         Self {
-            health: ENEMY_HEALTH,
+            health,
             dir: 1.0,
             vy: 0.0,
         }
@@ -149,8 +168,9 @@ const SWING_COOLDOWN: f32 = 0.26;
 /// Extra time after the cooldown during which a press continues the combo.
 const COMBO_GRACE: f32 = 0.40;
 /// How far in front of the player the hitbox centre sits, and its half-extents.
-const HIT_REACH: f32 = 22.0;
-const HIT_HALF: Vec2 = Vec2::new(16.0, 16.0);
+/// Deliberately generous (a wide arc, à la Silksong's nail) so swings feel forgiving.
+const HIT_REACH: f32 = 24.0;
+const HIT_HALF: Vec2 = Vec2::new(28.0, 26.0);
 const SWORD_DAMAGE: i32 = 1;
 /// How long a slash sprite lingers.
 const SLASH_TIME: f32 = 0.12;
@@ -210,11 +230,11 @@ fn player_attack(
         }
     }
 
-    // Slash visual — bigger and gold on the finisher.
+    // Slash visual — roughly matches the hitbox; bigger and gold on the finisher.
     let (size, color) = match sword.step {
-        3 => (Vec2::new(40.0, 48.0), Color::srgb(1.0, 0.85, 0.4)),
-        2 => (Vec2::new(34.0, 42.0), Color::srgb(0.85, 0.95, 1.0)),
-        _ => (Vec2::new(30.0, 38.0), Color::srgb(0.6, 0.9, 1.0)),
+        3 => (Vec2::new(58.0, 58.0), Color::srgb(1.0, 0.85, 0.4)),
+        2 => (Vec2::new(52.0, 52.0), Color::srgb(0.85, 0.95, 1.0)),
+        _ => (Vec2::new(46.0, 48.0), Color::srgb(0.6, 0.9, 1.0)),
     };
     commands.spawn((
         MapEntity,

@@ -71,15 +71,20 @@ with zig-zag ledges gives the climbing; **ceiling/floor gaps** are the up/down
 doors and **side corridors** are the left/right doors. Hazards are sparse and
 avoidable: **ground spikes** in dead-end corners and **falling rocks** in the
 open. Touching one (or an enemy) costs a **heart** (with brief invulnerability) and
-bounces you to the room's entrance; lose all three hearts and you respawn at the
-last bench.
+**knocks you back**; only falling into a pit — with nowhere to land — sends you
+back to the room's entrance. Lose all three hearts and you respawn at the last
+bench.
 
-**Enemies** (`E` glyph) patrol the ground, turning at walls and ledges, and hurt
-you on contact. Swing your **sword** with **`J`** (gamepad `X`): a hitbox in front
-of the way you're facing, and presses chain a **3-hit combo** (the finisher flashes
-gold). A killed enemy drops an **energy orb** — walk over it to bank **energy**
-(counted on the HUD). Enemies respawn when the room reloads (re-entering it, or
-resting at a bench).
+**Enemies** patrol the ground (turning at walls and ledges) and hurt you on
+contact. They're all one **`E`** glyph; a room's optional `enemies` array assigns
+each cell a **type** by coordinate (a colour + hit points — see
+[`ENEMY_KINDS`](src/combat.rs)), and an `E` with no entry uses the first type. So
+there's no glyph budget — add as many enemy types as you like. The demo uses a
+basic purple one (three hits) and a red one (two hits). Swing your **sword** with
+**`J`** (gamepad `X`): a generous hitbox (a wide arc) in front of the way you're
+facing, and presses chain a **3-hit combo** (the finisher flashes gold). A killed
+enemy drops an **energy orb** — walk over it to bank **energy** (counted on the
+HUD). Enemies respawn when the room reloads (re-entering it, or resting at a bench).
 
 **Benches** are checkpoints — the start room has one. Stand on a bench and press
 **`E`** (gamepad **`Y`**) — a **`[E] rest`** prompt appears — to **save** your game,
@@ -137,8 +142,11 @@ room just names the neighbour on each side (empty = a wall / bottomless edge):
         // a pad at (col 1, row 1) → arrive at r3_2's cell (col 14, row 20)
         (origin_col: 1, origin_row: 1, to: "r3_2", dest_col: 14, dest_row: 20),
     ],
+    enemies: [                   // types for `E` cells (optional; default = kind 0)
+        (kind: 1, col: 3, row: 1),   // the `E` at (3, 1) is enemy type 1
+    ],
     bg:     [0.32, 0.16, 0.16],  // background colour [r, g, b] in 0..1
-    tiles: [ "######", "#.@.#", "######" ],   // grid, top to bottom; `@` = start
+    tiles: [ "######", "#.@E#", "######" ],   // grid, top to bottom; `@` = start, `E` = enemy
 )
 ```
 
@@ -154,6 +162,11 @@ matched by glyph:
 For a two-way link, give each end a pad pointing at the other's cell. A pad won't
 fire again until you've stepped ~1.5 tiles clear of it, so you land safely on the
 destination pad and don't bounce back and forth.
+
+**Enemies** use one `E` glyph in the grid; the optional `enemies` array gives a
+`kind` (a [`combat::ENEMY_KINDS`](src/combat.rs) index) to the `E` at `(col, row)`.
+An `E` with no matching entry uses kind 0, so painting `E` in the builder just works,
+and you can define any number of types without spending more glyphs.
 
 Each room has an optional **display name** (e.g. "Forest Glade", "Meadow") shown
 on the world map and in the builder; when empty it falls back to the file key.
@@ -222,7 +235,7 @@ losing all hearts.
 Drop your own PNGs over the placeholders in `assets/sprites/`
 (`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `orb.png`, `slash.png`). Sizes
 are set in code via `custom_size`, so any resolution works — the world keeps the
-same scale.
+same scale. The enemy sprite is **near-white** so each kind tints it to its colour.
 
 **`player.png`, `portal.png`, and `bench.png` are sprite sheets** — each an N×M
 grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
@@ -252,6 +265,14 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Enemy types are now **data-driven**: one `E` glyph plus an
+  `enemies: [(kind, col, row)]` array (kind indexes `combat::ENEMY_KINDS`), so any
+  number of types fit without per-type glyphs. An `E` with no entry uses kind 0. The
+  shared sprite is tinted per kind (the red variant is now kind 1, not `F`).
+- **2026-06-26** — Combat feel pass: taking damage now **knocks the player back**
+  (with a brief stun) instead of teleporting — pits still respawn you at the room
+  entry. The sword's hitbox is **much more generous** (a wide arc), and there's a
+  second, **red** enemy (`F`) that dies in two hits.
 - **2026-06-26** — Added **combat**: patrolling **enemies** (`E` glyph; turn at
   walls/ledges, hurt on contact), a **sword** (`J`) with a **3-hit combo**, and
   **energy** orbs that enemies drop and the player banks (HUD counter). Enemies

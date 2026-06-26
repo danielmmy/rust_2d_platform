@@ -23,7 +23,8 @@ use crate::hazards::RockSprite;
 use crate::menu::Paused;
 use crate::state::GameState;
 use crate::world::{
-    BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, GameAssets, MapData, START_MARKER, Teleport, map_fs_path,
+    BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, EnemySpawn, GameAssets, MapData, START_MARKER, Teleport,
+    map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -88,6 +89,7 @@ struct EditBuffer {
     east: String,
     west: String,
     teleports: Vec<Teleport>, // coordinate-based portals (see the Portal brush)
+    enemies: Vec<EnemySpawn>, // per-cell enemy types (preserved across edits)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -1109,6 +1111,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         east: String::new(),
         west: String::new(),
         teleports: Vec::new(),
+        enemies: Vec::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -1165,6 +1168,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         east: String::new(),
         west: String::new(),
         teleports: Vec::new(),
+        enemies: Vec::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -1238,6 +1242,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         east: map.east.clone(),
         west: map.west.clone(),
         teleports: map.teleports.clone(),
+        enemies: map.enemies.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1245,6 +1250,21 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
 }
 
 fn map_from_buffer(buffer: &EditBuffer) -> MapData {
+    // Keep only enemy entries whose cell is still an `E` glyph (drop ones whose
+    // tile was erased or repainted).
+    let is_enemy_cell = |col: i32, row: i32| {
+        usize::try_from(row)
+            .ok()
+            .zip(usize::try_from(col).ok())
+            .and_then(|(r, c)| buffer.grid.get(r).and_then(|line| line.get(c)))
+            == Some(&ENEMY_GLYPH)
+    };
+    let enemies = buffer
+        .enemies
+        .iter()
+        .filter(|e| is_enemy_cell(e.col, e.row))
+        .cloned()
+        .collect();
     MapData {
         name: buffer.display.clone(),
         solid: "#".to_string(),
@@ -1255,6 +1275,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         east: buffer.east.clone(),
         west: buffer.west.clone(),
         teleports: buffer.teleports.clone(),
+        enemies,
         bg: buffer.bg,
         tiles: buffer
             .grid

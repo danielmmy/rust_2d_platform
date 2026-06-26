@@ -120,12 +120,13 @@ fn hazard_contact(
     let player_pos = player_tf.translation.truncate();
 
     // Falling off the world is handled by room transitions; here we only hurt on
-    // contact with a hazard (spikes, falling rocks).
-    let touched = hazards.iter().any(|(hazard_tf, hazard)| {
+    // contact with a hazard (spikes, falling rocks, enemies) — knocking the player
+    // away from it.
+    let touched = hazards.iter().find(|(hazard_tf, hazard)| {
         let delta = (hazard_tf.translation.truncate() - player_pos).abs();
         delta.x < hazard.half.x + PLAYER_HALF.x && delta.y < hazard.half.y + PLAYER_HALF.y
     });
-    if touched {
-        hurt.write(Hurt);
+    if let Some((hazard_tf, _)) = touched {
+        hurt.write(Hurt::From(hazard_tf.translation.truncate()));
     }
 }

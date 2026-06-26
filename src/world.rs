@@ -17,7 +17,7 @@ use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 
 use crate::GameSet;
-use crate::combat::{ENEMY_HALF, Enemy};
+use crate::combat::{ENEMY_HALF, ENEMY_KINDS, Enemy};
 use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
 use crate::input::PlayerIntent;
@@ -41,6 +41,16 @@ pub struct Teleport {
     pub dest_row: i32,
 }
 
+/// Types an enemy `E` glyph at cell `(col, row)` (grid coords, row 0 = top). The
+/// `kind` indexes [`ENEMY_KINDS`](crate::combat::ENEMY_KINDS); an `E` with no
+/// matching entry falls back to kind 0. One glyph, any number of types.
+#[derive(Clone)]
+pub struct EnemySpawn {
+    pub kind: usize,
+    pub col: i32,
+    pub row: i32,
+}
+
 /// One map's data, read from a `.map.ron` file by [`MapLoader`].
 #[derive(Asset, TypePath, Clone)]
 pub struct MapData {
@@ -62,6 +72,8 @@ pub struct MapData {
     pub west: String,
     /// Teleporter pads in this room (empty = none).
     pub teleports: Vec<Teleport>,
+    /// Per-cell enemy types for `E` glyphs (cells without an entry use kind 0).
+    pub enemies: Vec<EnemySpawn>,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -114,6 +126,21 @@ impl MapData {
             None => Vec::new(),
         };
 
+        let enemies = match value.try_field("enemies") {
+            Some(list) => list
+                .as_list()?
+                .iter()
+                .map(|e| {
+                    Ok(EnemySpawn {
+                        kind: e.field("kind")?.as_i32()?.max(0) as usize,
+                        col: e.field("col")?.as_i32()?,
+                        row: e.field("row")?.as_i32()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, RonError>>()?,
+            None => Vec::new(),
+        };
+
         Ok(MapData {
             name: optional_str("name")?,
             solid: value.field("solid")?.as_str()?.to_string(),
@@ -124,6 +151,7 @@ impl MapData {
             east: optional_str("east")?,
             west: optional_str("west")?,
             teleports,
+            enemies,
             bg,
             tiles,
         })
@@ -160,10 +188,21 @@ impl MapData {
                 )
             })
             .collect();
+        let enemies: String = self
+            .enemies
+            .iter()
+            .map(|e| {
+                format!(
+                    "        (kind: {}, col: {}, row: {}),\n",
+                    e.kind, e.col, e.row
+                )
+            })
+            .collect();
         format!(
             "(\n    name: \"{}\",\n    solid: \"{}\",\n    spikes: \"{}\",\n    rocks: \"{}\",\n    \
              north: \"{}\",\n    south: \"{}\",\n    east: \"{}\",\n    west: \"{}\",\n    \
-             teleports: [\n{teleports}    ],\n    bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
+             teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
+             bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
             self.spikes,
@@ -267,7 +306,8 @@ impl Default for TeleportArmed {
     }
 }
 
-/// Grid glyph marking a patrolling enemy spawn.
+/// Grid glyph marking a patrolling enemy spawn (its type comes from the room's
+/// `enemies` array, by cell; cells without an entry use kind 0).
 pub(crate) const ENEMY_GLYPH: char = 'E';
 /// Grid glyph marking a bench: a checkpoint that saves the game, refills hearts,
 /// resets enemies, and becomes the player's respawn point.
@@ -605,12 +645,22 @@ fn handle_load_map(
             if ch == START_MARKER {
                 start_pos = center;
             } else if ch == ENEMY_GLYPH {
+                // The type comes from the room's `enemies` array (by cell); an `E`
+                // with no entry — or an out-of-range kind — uses the first type.
+                let kind = map
+                    .enemies
+                    .iter()
+                    .find(|e| e.col == col && e.row == r as i32)
+                    .map_or(0, |e| e.kind)
+                    .min(ENEMY_KINDS.len() - 1);
+                let spec = &ENEMY_KINDS[kind];
                 commands.spawn((
                     MapEntity,
-                    Enemy::new(),
+                    Enemy::new(spec.health),
                     Hazard { half: ENEMY_HALF },
                     Sprite {
                         image: assets.enemy.clone(),
+                        color: spec.color,
                         custom_size: Some(Vec2::splat(TILE)),
                         ..default()
                     },
@@ -774,9 +824,10 @@ fn detect_transitions(
     }
 
     // Fell into a bottomless pit (no room below): take a hit. The damage system
-    // respawns at the room entrance, or the last bench if it was the final heart.
+    // respawns at the room entrance (no ground to knock back to), or the last bench
+    // if it was the final heart.
     if pos.y < -TILE && current.south.is_none() {
-        hurt.write(Hurt);
+        hurt.write(Hurt::Pit);
     }
 }
 
@@ -965,6 +1016,24 @@ mod tests {
                     tp.to
                 );
             }
+            // Enemy entries must use a real kind and sit on an `E` cell.
+            for e in &map.enemies {
+                assert!(
+                    e.kind < ENEMY_KINDS.len(),
+                    "{name}: enemy kind {} out of range",
+                    e.kind
+                );
+                let on_enemy = map
+                    .tiles
+                    .get(e.row as usize)
+                    .and_then(|line| line.chars().nth(e.col as usize))
+                    == Some(ENEMY_GLYPH);
+                assert!(
+                    on_enemy,
+                    "{name}: enemy entry ({}, {}) not on an 'E'",
+                    e.col, e.row
+                );
+            }
         }
 
         // The starting room must contain the start marker.
@@ -994,11 +1063,16 @@ mod tests {
                 dest_col: 7,
                 dest_row: 2,
             }],
+            enemies: vec![EnemySpawn {
+                kind: 1,
+                col: 2,
+                row: 2,
+            }],
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
                 "#T@#".to_string(),
-                "#^R#".to_string(),
+                "#^E#".to_string(),
                 "####".to_string(),
             ],
         };
@@ -1017,5 +1091,9 @@ mod tests {
         assert_eq!(parsed.teleports[0].to, "r1_1");
         assert_eq!(parsed.teleports[0].dest_col, 7);
         assert_eq!(parsed.teleports[0].dest_row, 2);
+        assert_eq!(parsed.enemies.len(), 1);
+        assert_eq!(parsed.enemies[0].kind, 1);
+        assert_eq!(parsed.enemies[0].col, 2);
+        assert_eq!(parsed.enemies[0].row, 2);
     }
 }

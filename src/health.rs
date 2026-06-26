@@ -32,12 +32,27 @@ impl Default for Health {
 #[derive(Resource, Default)]
 pub struct Invuln(pub f32);
 
+/// Seconds of stun remaining: while > 0 the player can't steer (they're being
+/// knocked back). Read by [`crate::player`] movement.
+#[derive(Resource, Default)]
+pub struct Stun(pub f32);
+
 /// How long i-frames last after taking a hit.
 const IFRAMES: f32 = 1.2;
+/// How long the player is stunned (no control) during a knockback.
+const STUN_TIME: f32 = 0.22;
+/// Knockback velocity applied on a hit (away from the source, plus a little up).
+const KNOCKBACK_X: f32 = 320.0;
+const KNOCKBACK_Y: f32 = 240.0;
 
-/// Written when the player should take a hit (by hazards, pits, …).
-#[derive(Message, Default)]
-pub(crate) struct Hurt;
+/// Written when the player should take a hit.
+#[derive(Message, Clone, Copy)]
+pub(crate) enum Hurt {
+    /// Hit by something at this world position — knock the player away from it.
+    From(Vec2),
+    /// Fell out of the world with no ground to land on — respawn at the room entry.
+    Pit,
+}
 
 /// One heart in the HUD, by index from the left.
 #[derive(Component)]
@@ -55,19 +70,22 @@ impl Plugin for HealthPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Health>()
             .init_resource::<Invuln>()
+            .init_resource::<Stun>()
             .add_message::<Hurt>()
             .add_systems(OnEnter(GameState::Playing), spawn_hud)
             .add_systems(OnExit(GameState::Playing), despawn_hud)
             .add_systems(
                 Update,
-                (tick_invuln, apply_damage).chain().in_set(GameSet::Hazards),
+                (tick_timers, apply_damage).chain().in_set(GameSet::Hazards),
             )
             .add_systems(Update, update_hud.run_if(in_state(GameState::Playing)));
     }
 }
 
-fn tick_invuln(time: Res<Time>, mut invuln: ResMut<Invuln>) {
-    invuln.0 = (invuln.0 - time.delta_secs()).max(0.0);
+fn tick_timers(time: Res<Time>, mut invuln: ResMut<Invuln>, mut stun: ResMut<Stun>) {
+    let dt = time.delta_secs();
+    invuln.0 = (invuln.0 - dt).max(0.0);
+    stun.0 = (stun.0 - dt).max(0.0);
 }
 
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
@@ -75,32 +93,34 @@ fn apply_damage(
     mut hurts: MessageReader<Hurt>,
     mut health: ResMut<Health>,
     mut invuln: ResMut<Invuln>,
+    mut stun: ResMut<Stun>,
     mut armed: ResMut<TeleportArmed>,
     save: Res<Save>,
     respawn: Res<RespawnPoint>,
     mut load: MessageWriter<LoadMap>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
 ) {
-    // Drain the queue; one hit per i-frame window however many sources fired.
-    let hit = hurts.read().count() > 0;
-    if !hit || invuln.0 > 0.0 {
+    // Drain the queue (so none go stale); take the first hit's source. One hit per
+    // i-frame window, however many sources fired.
+    let sources: Vec<Hurt> = hurts.read().copied().collect();
+    let Some(&hurt) = sources.first() else {
+        return;
+    };
+    if invuln.0 > 0.0 {
         return;
     }
 
     health.current -= 1;
     invuln.0 = IFRAMES;
-    // Disarm teleporters: the room-entry respawn can be a portal pad, and we don't
-    // want landing back on it to immediately teleport the player away again.
+    // Disarm teleporters: a respawn/knockback can leave the player on a portal pad,
+    // and we don't want it to immediately fire and teleport them away.
     armed.0 = false;
 
-    if health.current > 0 {
-        // Non-fatal: bounce back to where the player entered this room.
-        if let Ok((mut transform, mut velocity)) = player.single_mut() {
-            transform.translation.x = respawn.0.x;
-            transform.translation.y = respawn.0.y;
-            velocity.0 = Vec2::ZERO;
-        }
-    } else {
+    let Ok((mut transform, mut velocity)) = player.single_mut() else {
+        return;
+    };
+
+    if health.current <= 0 {
         // Out of hearts: refill and return to the last bench (else the start room).
         health.current = health.max;
         let (map, entry) = if save.has_bench() {
@@ -112,6 +132,28 @@ fn apply_damage(
             (START_MAP.to_string(), Entry::Start)
         };
         load.write(LoadMap { map, entry });
+        return;
+    }
+
+    match hurt {
+        // Knock the player back away from what hit them, and stun briefly so the
+        // hit registers regardless of input.
+        Hurt::From(source) => {
+            let dir = if transform.translation.x >= source.x {
+                1.0
+            } else {
+                -1.0
+            };
+            velocity.0 = Vec2::new(dir * KNOCKBACK_X, KNOCKBACK_Y);
+            stun.0 = STUN_TIME;
+        }
+        // Fell into a bottomless pit — nowhere to knock back to, so respawn at the
+        // room's entry.
+        Hurt::Pit => {
+            transform.translation.x = respawn.0.x;
+            transform.translation.y = respawn.0.y;
+            velocity.0 = Vec2::ZERO;
+        }
     }
 }
 

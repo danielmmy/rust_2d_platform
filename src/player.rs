@@ -12,6 +12,7 @@
 use bevy::prelude::*;
 
 use crate::GameSet;
+use crate::health::Stun;
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
 
@@ -97,55 +98,61 @@ fn movement(
     intent: Res<PlayerIntent>,
     cfg: Res<MovementConfig>,
     solids: Res<Solids>,
+    stun: Res<Stun>,
     mut query: Query<(&mut Transform, &mut Velocity, &mut JumpState, &mut Sprite), With<Player>>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
+    // While stunned (knocked back from a hit) the player has no steering — they just
+    // coast under the knockback velocity + gravity.
+    let stunned = stun.0 > 0.0;
 
     for (mut transform, mut velocity, mut jump, mut sprite) in &mut query {
-        // --- horizontal ---
-        let target = intent.move_x * cfg.run_speed;
-        let accel = if jump.grounded {
-            cfg.accel_ground
-        } else {
-            cfg.accel_air
-        };
-        velocity.0.x = approach(velocity.0.x, target, accel * dt);
-        if intent.move_x > 0.05 {
-            sprite.flip_x = false;
-        } else if intent.move_x < -0.05 {
-            sprite.flip_x = true;
-        }
+        if !stunned {
+            // --- horizontal ---
+            let target = intent.move_x * cfg.run_speed;
+            let accel = if jump.grounded {
+                cfg.accel_ground
+            } else {
+                cfg.accel_air
+            };
+            velocity.0.x = approach(velocity.0.x, target, accel * dt);
+            if intent.move_x > 0.05 {
+                sprite.flip_x = false;
+            } else if intent.move_x < -0.05 {
+                sprite.flip_x = true;
+            }
 
-        // --- coyote time + jump buffer ---
-        if jump.grounded {
-            jump.coyote = cfg.coyote_time;
-        } else {
-            jump.coyote = (jump.coyote - dt).max(0.0);
-        }
-        if intent.jump_pressed {
-            jump.buffer = cfg.jump_buffer;
-        } else {
-            jump.buffer = (jump.buffer - dt).max(0.0);
-        }
+            // --- coyote time + jump buffer ---
+            if jump.grounded {
+                jump.coyote = cfg.coyote_time;
+            } else {
+                jump.coyote = (jump.coyote - dt).max(0.0);
+            }
+            if intent.jump_pressed {
+                jump.buffer = cfg.jump_buffer;
+            } else {
+                jump.buffer = (jump.buffer - dt).max(0.0);
+            }
 
-        // --- start a jump ---
-        if jump.buffer > 0.0 && jump.coyote > 0.0 {
-            velocity.0.y = cfg.jump_speed;
-            jump.jumping = true;
-            jump.buffer = 0.0;
-            jump.coyote = 0.0;
-        }
+            // --- start a jump ---
+            if jump.buffer > 0.0 && jump.coyote > 0.0 {
+                velocity.0.y = cfg.jump_speed;
+                jump.jumping = true;
+                jump.buffer = 0.0;
+                jump.coyote = 0.0;
+            }
 
-        // --- variable height: releasing early cuts the rise ---
-        if !intent.jump_held && jump.jumping && velocity.0.y > 0.0 {
-            velocity.0.y *= cfg.jump_cut;
-            jump.jumping = false;
-        }
-        if velocity.0.y <= 0.0 {
-            jump.jumping = false;
+            // --- variable height: releasing early cuts the rise ---
+            if !intent.jump_held && jump.jumping && velocity.0.y > 0.0 {
+                velocity.0.y *= cfg.jump_cut;
+                jump.jumping = false;
+            }
+            if velocity.0.y <= 0.0 {
+                jump.jumping = false;
+            }
         }
 
         // --- gravity (asymmetric + apex control) ---
