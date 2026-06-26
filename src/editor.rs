@@ -8,12 +8,13 @@
 //! - **Rooms** (`M`) — a map of every room where you select one to edit, **add**,
 //!   **delete**, **reorder** (grab + move), or **reset** to the default 12.
 //!
-//! The room grid is **unbounded** (the room view scrolls). Connectivity is derived
-//! from the grid: rooms named `r{col}_{row}` are linked to their existing
-//! orthogonal neighbours automatically, so there are no link controls to fiddle
-//! with. Structural changes rewrite the affected `.map.ron` files **in the active
-//! save's level directory** ([`LevelRoot`]) and update the running game; `Esc` from
-//! Tiles leaves the builder. Story saves never reach this module.
+//! The room grid is **unbounded** (the room view scrolls). Grid-adjacent rooms named
+//! `r{col}_{row}` are auto-linked with default doors, and the **Door** brush adds custom
+//! ones: pick an origin cell, choose any room, then pick where you land there. (The
+//! **Portal** brush does the same for teleporter pads.) Structural changes rewrite the
+//! affected `.map.ron` files **in the active save's level directory** ([`LevelRoot`]) and
+//! update the running game; `Esc` from Tiles leaves the builder. Story saves never reach
+//! this module.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -26,7 +27,7 @@ use crate::menu::Paused;
 use crate::save::{GameMode, Save};
 use crate::state::GameState;
 use crate::world::{
-    ArenaSpawn, BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
+    ArenaSpawn, BENCH_GLYPH, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
     LevelRoot, MapData, START_MARKER, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
@@ -34,9 +35,12 @@ use crate::worldmap::MapView;
 /// Sentinel for the portal brush — never written to the grid (portals are stored
 /// as coordinate data, not glyphs). Painting it starts the linking flow instead.
 const PORTAL_BRUSH: char = 'P';
+/// Sentinel for the door brush — like the portal brush, but creates an **edge door**
+/// (walk off the room edge to the linked room) instead of a teleporter pad.
+const DOOR_BRUSH: char = 'D';
 
 /// The paint brushes, by the grid character they write.
-const BRUSHES: [(char, &str); 9] = [
+const BRUSHES: [(char, &str); 10] = [
     ('#', "Wall"),
     ('^', "Spike"),
     ('R', "Rock"),
@@ -45,6 +49,7 @@ const BRUSHES: [(char, &str); 9] = [
     (BENCH_GLYPH, "Bench"),
     (FOG_GLYPH, "Fog"),
     (PORTAL_BRUSH, "Portal"),
+    (DOOR_BRUSH, "Door"),
     ('.', "Erase"),
 ];
 
@@ -53,6 +58,8 @@ const FOG_COLOR: Color = Color::srgba(0.55, 0.4, 0.85, 0.7);
 
 /// Editor colour for a teleporter pad (matches the in-game pad).
 const PORTAL_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
+/// Editor colour for a door origin (distinct from the cyan portal pads).
+const DOOR_COLOR: Color = Color::srgb(0.45, 0.95, 0.5);
 /// Editor colour for a bench (matches the in-game bench).
 const BENCH_COLOR: Color = Color::srgb(0.85, 0.62, 0.32);
 
@@ -91,10 +98,10 @@ struct EditBuffer {
     name: String,         // the file key (e.g. "r0_0")
     display: String,      // the human-friendly name (empty → shows the key)
     grid: Vec<Vec<char>>, // [row][col]; row 0 is the top
-    north: String,
-    south: String,
-    east: String,
-    west: String,
+    north: Vec<Door>,     // doors off each edge (see the Door brush + grid auto-linking)
+    south: Vec<Door>,
+    east: Vec<Door>,
+    west: Vec<Door>,
     teleports: Vec<Teleport>, // coordinate-based portals (see the Portal brush)
     enemies: Vec<EnemySpawn>, // per-cell enemy types (preserved across edits)
     fog_wall: Vec<ArenaSpawn>, // arena combatants (hand-authored; preserved across edits)
@@ -121,11 +128,18 @@ struct RoomMap {
 #[derive(Resource, Default)]
 pub(crate) struct StartInEditor(pub bool);
 
-/// A portal mid-placement: the source room and the cell its first endpoint will
-/// take. `None` unless a link is in progress; cleared (without writing anything)
-/// on cancel, so cancelling removes the first portal.
+/// Whether a pending link makes a teleporter pad or an edge door.
+#[derive(Clone, Copy, PartialEq)]
+enum LinkKind {
+    Portal,
+    Door,
+}
+
+/// A link mid-placement: its kind, the source room, and the source cell (a portal's
+/// first pad, or a door's origin). `None` unless a link is in progress; cleared
+/// (without writing anything) on cancel, so cancelling removes the half-made link.
 #[derive(Resource, Default)]
-struct PendingLink(Option<(String, (usize, usize))>);
+struct PendingLink(Option<(LinkKind, String, (usize, usize))>);
 
 /// Tags every entity that makes up the builder overlay (despawned on redraw).
 #[derive(Component)]
@@ -266,8 +280,9 @@ fn edit_tiles(
         return;
     }
 
-    // Placing the second endpoint of a portal, in the room we navigated to.
-    if let Some((from_room, from_cell)) = pending.0.clone() {
+    // Placing the second endpoint (a portal's exit, or a door's destination), in the
+    // room we navigated to.
+    if let Some((kind, from_room, from_cell)) = pending.0.clone() {
         let cols = buffer.grid.first().map_or(0, Vec::len);
         let rows = buffer.grid.len();
         let mut moved = false;
@@ -292,11 +307,11 @@ fn edit_tiles(
             // The source endpoint was never written, so there's nothing to undo.
             pending.0 = None;
             *buffer = load_buffer(&from_room, &game_assets, &map_assets);
-            buffer.status = "portal cancelled".to_string();
+            buffer.status = "link cancelled".to_string();
             redraw(&mut commands, &overlay);
             draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
         } else if keys.just_pressed(KeyCode::Space) {
-            if from_room == buffer.name && from_cell == buffer.cursor {
+            if kind == LinkKind::Portal && from_room == buffer.name && from_cell == buffer.cursor {
                 // Self-portal: the exit must be a different tile from the entrance.
                 buffer.status = "portal: exit must be on another tile".to_string();
                 redraw(&mut commands, &overlay);
@@ -304,14 +319,25 @@ fn edit_tiles(
                 return;
             }
             pending.0 = None;
-            buffer.status = link_portal(
-                &root,
-                &from_room,
-                from_cell,
-                &mut buffer,
-                &mut game_assets,
-                &mut map_assets,
-            );
+            buffer.status = match kind {
+                LinkKind::Portal => link_portal(
+                    &root,
+                    &from_room,
+                    from_cell,
+                    &mut buffer,
+                    &mut game_assets,
+                    &mut map_assets,
+                ),
+                LinkKind::Door => link_door(
+                    &root,
+                    &from_room,
+                    from_cell,
+                    &buffer.name.clone(),
+                    buffer.cursor,
+                    &mut game_assets,
+                    &mut map_assets,
+                ),
+            };
             redraw(&mut commands, &overlay);
             draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
         } else if moved {
@@ -362,33 +388,46 @@ fn edit_tiles(
 
     if keys.just_pressed(KeyCode::Space) {
         let (c, r) = buffer.cursor;
-        if BRUSHES[buffer.brush].0 == PORTAL_BRUSH {
+        let brush = BRUSHES[buffer.brush].0;
+        if brush == PORTAL_BRUSH || brush == DOOR_BRUSH {
             // Persist the source room first (so its current edits survive the trip
-            // through the room manager — `link_portal` writes the endpoint into the
-            // saved room), then remember this endpoint and open the manager to pick
-            // where the other side goes.
+            // through the room manager — the link is written into the saved room),
+            // then remember this endpoint and open the manager to pick the other side.
             save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
-            pending.0 = Some((buffer.name.clone(), (c, r)));
+            let kind = if brush == DOOR_BRUSH {
+                LinkKind::Door
+            } else {
+                LinkKind::Portal
+            };
+            pending.0 = Some((kind, buffer.name.clone(), (c, r)));
             if let Some((gx, gy)) = parse_pos(&buffer.name) {
                 room.gx = gx;
                 room.gy = gy;
             }
             room.grab = None;
-            room.status = "portal: pick the destination room (enter)   |   esc cancels".to_string();
+            let what = if brush == DOOR_BRUSH {
+                "door"
+            } else {
+                "portal"
+            };
+            room.status = format!("{what}: pick the destination room (enter)   |   esc cancels");
             next_view.set(EditorView::Rooms);
             redraw(&mut commands, &overlay);
             draw_room_map(&mut commands, center, &game_assets, &map_assets, &room);
             return;
         }
-        buffer.grid[r][c] = BRUSHES[buffer.brush].0;
+        buffer.grid[r][c] = brush;
         clear_portal_origin(&mut buffer.teleports, c as i32, r as i32);
+        clear_door_origin(&mut buffer, c as i32, r as i32);
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyX) {
         let (c, r) = buffer.cursor;
         buffer.grid[r][c] = '.';
-        // Pads aren't grid glyphs, so erasing a cell also drops a pad there.
+        // Pads and doors aren't grid glyphs, so erasing a cell also drops the pad /
+        // outgoing door whose origin sits there.
         clear_portal_origin(&mut buffer.teleports, c as i32, r as i32);
+        clear_door_origin(&mut buffer, c as i32, r as i32);
         changed = true;
     }
     if keys.just_pressed(KeyCode::Tab) {
@@ -495,6 +534,20 @@ fn draw_tiles(
         }
     }
 
+    // Door origins (coordinate data) drawn as green squares, one per outgoing door.
+    for edge in [&buffer.north, &buffer.south, &buffer.east, &buffer.west] {
+        for door in edge {
+            let (oc, or) = door.origin;
+            if (oc as usize) < cols && (or as usize) < rows {
+                let pos = Vec2::new(
+                    top_left.x + (oc as f32 + 0.5) * tile,
+                    top_left.y - (or as f32 + 0.5) * tile,
+                );
+                box_at(commands, pos, Vec2::splat(tile * 0.9), 152.0, DOOR_COLOR);
+            }
+        }
+    }
+
     let (cc, cr) = buffer.cursor;
     box_at(
         commands,
@@ -596,14 +649,18 @@ fn edit_rooms(
     let root = level_root.dir().unwrap_or_default().to_string();
     let center = camera_center(&camera);
 
-    // Choosing a portal's destination room: a focused mode with no other room ops.
-    if let Some((from_room, _)) = pending.0.clone() {
+    // Choosing a link's destination room: a focused mode with no other room ops.
+    if let Some((kind, from_room, _)) = pending.0.clone() {
+        let what = match kind {
+            LinkKind::Door => "door",
+            LinkKind::Portal => "portal",
+        };
         if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyM) {
-            // Cancel: drop the pending portal and return to its source room.
+            // Cancel: drop the pending link and return to its source room.
             pending.0 = None;
             next_view.set(EditorView::Tiles);
             *buffer = load_buffer(&from_room, &game_assets, &map_assets);
-            buffer.status = "portal cancelled".to_string();
+            buffer.status = format!("{what} cancelled");
             redraw(&mut commands, &overlay);
             draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
             return;
@@ -621,13 +678,13 @@ fn edit_rooms(
         if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
             let dest = name_at((room.gx, room.gy));
             if room_data(&game_assets, &map_assets, &dest).is_none() {
-                room.status = "portal: pick an existing room".to_string();
+                room.status = format!("{what}: pick an existing room");
             } else {
                 // Load the destination (may be the source room itself) and hand back
-                // to the tile view to drop the exit.
+                // to the tile view to drop the landing cell.
                 next_view.set(EditorView::Tiles);
                 *buffer = load_buffer(&dest, &game_assets, &map_assets);
-                buffer.status = "portal: drop the exit (space)   |   esc cancels".to_string();
+                buffer.status = format!("{what}: drop the destination (space)   |   esc cancels");
                 redraw(&mut commands, &overlay);
                 draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
                 return;
@@ -936,23 +993,71 @@ fn apply_world(
     }
 }
 
+/// Keep the grid's implied connectivity in sync: drop doors to rooms that no longer
+/// exist, then make sure each grid-adjacent neighbour has a default door. Doors the user
+/// authored by hand (extra doors, or links to non-adjacent rooms) are left untouched.
 fn relink(world: &mut BTreeMap<String, MapData>) {
-    let occupied: HashSet<(i32, i32)> = world.keys().filter_map(|name| parse_pos(name)).collect();
-    let link = |gx: i32, gy: i32| {
-        if gx >= 0 && gy >= 0 && occupied.contains(&(gx, gy)) {
-            name_at((gx, gy))
-        } else {
-            String::new()
-        }
+    let names: HashSet<String> = world.keys().cloned().collect();
+    let occupied: HashSet<(i32, i32)> = names.iter().filter_map(|n| parse_pos(n)).collect();
+    let neighbor = |gx: i32, gy: i32| -> Option<String> {
+        (gx >= 0 && gy >= 0 && occupied.contains(&(gx, gy))).then(|| name_at((gx, gy)))
     };
     for (name, map) in world.iter_mut() {
+        for edge in [&mut map.north, &mut map.south, &mut map.east, &mut map.west] {
+            edge.retain(|d| names.contains(&d.to));
+        }
         if let Some((gx, gy)) = parse_pos(name) {
-            map.north = link(gx, gy + 1);
-            map.south = link(gx, gy - 1);
-            map.east = link(gx + 1, gy);
-            map.west = link(gx - 1, gy);
+            let w = map
+                .tiles
+                .iter()
+                .map(|r| r.chars().count())
+                .max()
+                .unwrap_or(0) as i32;
+            let h = map.tiles.len() as i32;
+            let shaft = (w - 1).clamp(0, 9);
+            let band = (h - 3).max(0); // ground-level door row
+            // origin = a cell on this edge; dest = the matching cell on the neighbour's
+            // opposite edge (the standard shaft/corridor layout).
+            ensure_door(
+                &mut map.north,
+                neighbor(gx, gy + 1),
+                (shaft, 0),
+                (shaft, band),
+            );
+            ensure_door(
+                &mut map.south,
+                neighbor(gx, gy - 1),
+                (shaft, h - 1),
+                (shaft, 2),
+            );
+            ensure_door(
+                &mut map.east,
+                neighbor(gx + 1, gy),
+                (w - 1, band),
+                (1, band),
+            );
+            ensure_door(
+                &mut map.west,
+                neighbor(gx - 1, gy),
+                (0, band),
+                (w - 2, band),
+            );
         }
         cut_doors(map);
+    }
+}
+
+/// Add a default `Door` to `edge` for `neighbour`, unless that edge already links there.
+fn ensure_door(
+    edge: &mut Vec<Door>,
+    neighbor: Option<String>,
+    origin: (i32, i32),
+    dest: (i32, i32),
+) {
+    if let Some(to) = neighbor
+        && !edge.iter().any(|d| d.to == to)
+    {
+        edge.push(Door { origin, to, dest });
     }
 }
 
@@ -1024,6 +1129,18 @@ fn persist_map(
 /// Drop any portal whose origin is `(col, row)` from a room's list.
 fn clear_portal_origin(teleports: &mut Vec<Teleport>, col: i32, row: i32) {
     teleports.retain(|t| (t.origin_col, t.origin_row) != (col, row));
+}
+
+/// Remove every outgoing door whose origin sits at `(col, row)` (erasing that cell).
+fn clear_door_origin(buffer: &mut EditBuffer, col: i32, row: i32) {
+    for edge in [
+        &mut buffer.north,
+        &mut buffer.south,
+        &mut buffer.east,
+        &mut buffer.west,
+    ] {
+        edge.retain(|d| d.origin != (col, row));
+    }
 }
 
 /// Complete a portal: a pad at the source cell (`from_room`/`from_cell`) and one at
@@ -1099,6 +1216,66 @@ fn link_portal(
     format!("portal linked: {from_room} <-> {to_room}")
 }
 
+/// Create a one-way **edge door**: from `from_room`'s `from_cell` (the origin) to
+/// `dest_room`'s `dest_cell` (the landing). The door is filed under whichever edge the
+/// origin sits nearest, an opening is carved there so the player can walk off, and the
+/// source room is saved. Returns a status line.
+fn link_door(
+    root: &str,
+    from_room: &str,
+    from_cell: (usize, usize),
+    dest_room: &str,
+    dest_cell: (usize, usize),
+    assets: &mut GameAssets,
+    maps: &mut Assets<MapData>,
+) -> String {
+    let Some(mut source) = room_data(assets, maps, from_room).cloned() else {
+        return format!("door source '{from_room}' is gone");
+    };
+    let origin = (from_cell.0 as i32, from_cell.1 as i32);
+    let dest = (dest_cell.0 as i32, dest_cell.1 as i32);
+    let (col, row) = origin;
+    let w = source
+        .tiles
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(0) as i32;
+    let h = source.tiles.len() as i32;
+
+    let door = Door {
+        origin,
+        to: dest_room.to_string(),
+        dest,
+    };
+    // File the door under the edge its origin is closest to (distances N, S, W, E).
+    let nearest = [row, h - 1 - row, col, w - 1 - col]
+        .into_iter()
+        .enumerate()
+        .min_by_key(|(_, d)| *d)
+        .map_or(0, |(i, _)| i);
+    match nearest {
+        0 => source.north.push(door),
+        1 => source.south.push(door),
+        2 => source.west.push(door),
+        _ => source.east.push(door),
+    }
+    // If the origin is on the border, carve an opening so walking off it actually exits.
+    let on_border = col == 0 || col == w - 1 || row == 0 || row == h - 1;
+    if on_border && let Some(line) = source.tiles.get(row as usize) {
+        let mut cells: Vec<char> = line.chars().collect();
+        if let Some(cell) = cells.get_mut(col as usize) {
+            *cell = '.';
+            source.tiles[row as usize] = cells.into_iter().collect();
+        }
+    }
+
+    if !persist_map(root, from_room, &source, assets, maps) {
+        return "door save failed".to_string();
+    }
+    format!("door: {from_room} -> {dest_room}")
+}
+
 // --- default rooms (porting the offline generator) -----------------------
 
 /// The default 12-room world, regenerated in code for the Reset button.
@@ -1153,10 +1330,10 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         solid: "#".to_string(),
         spikes: "^".to_string(),
         rocks: "R".to_string(),
-        north: String::new(),
-        south: String::new(),
-        east: String::new(),
-        west: String::new(),
+        north: Vec::new(),
+        south: Vec::new(),
+        east: Vec::new(),
+        west: Vec::new(),
         teleports: Vec::new(),
         enemies: Vec::new(),
         fog_wall: Vec::new(),
@@ -1212,10 +1389,10 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         solid: "#".to_string(),
         spikes: "^".to_string(),
         rocks: "R".to_string(),
-        north: String::new(),
-        south: String::new(),
-        east: String::new(),
-        west: String::new(),
+        north: Vec::new(),
+        south: Vec::new(),
+        east: Vec::new(),
+        west: Vec::new(),
         teleports: Vec::new(),
         enemies: Vec::new(),
         fog_wall: Vec::new(),
@@ -1501,9 +1678,13 @@ mod tests {
         assert_eq!(world.len(), 12);
 
         for (name, map) in &world {
-            for link in [&map.north, &map.south, &map.east, &map.west] {
-                if !link.is_empty() {
-                    assert!(world.contains_key(link), "{name} links to missing {link}");
+            for edge in [&map.north, &map.south, &map.east, &map.west] {
+                for door in edge {
+                    assert!(
+                        world.contains_key(&door.to),
+                        "{name} links to missing {}",
+                        door.to
+                    );
                 }
             }
         }

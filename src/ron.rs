@@ -181,7 +181,7 @@ impl Parser {
             Some('"') => self.parse_string().map(Value::Str),
             Some('\'') => self.parse_char().map(Value::Char),
             Some('[') => self.parse_list(),
-            Some('(') => self.parse_struct(),
+            Some('(') => self.parse_paren(),
             Some(c) if c == '-' || c == '+' || c == '.' || c.is_ascii_digit() => {
                 self.parse_number()
             }
@@ -190,7 +190,7 @@ impl Parser {
                 self.parse_ident();
                 self.skip_trivia();
                 if self.peek() == Some('(') {
-                    self.parse_struct()
+                    self.parse_paren()
                 } else {
                     Err(self.err("unexpected identifier"))
                 }
@@ -199,8 +199,31 @@ impl Parser {
         }
     }
 
-    fn parse_struct(&mut self) -> Result<Value, RonError> {
+    /// Parse a `( … )` group: either a named-field struct (`(field: value, …)` →
+    /// [`Value::Map`]) or a positional tuple (`(a, b, …)` → [`Value::List`], the same
+    /// shape as `[ … ]`). They're told apart by looking ahead for `ident :`.
+    fn parse_paren(&mut self) -> Result<Value, RonError> {
         self.expect('(')?;
+        self.skip_trivia();
+        if self.peek() == Some(')') {
+            self.bump();
+            return Ok(Value::List(Vec::new())); // an empty tuple `()`
+        }
+        let checkpoint = self.pos;
+        let named = self.parse_ident().is_some() && {
+            self.skip_trivia();
+            self.peek() == Some(':')
+        };
+        self.pos = checkpoint;
+        if named {
+            self.parse_struct_fields()
+        } else {
+            self.parse_tuple_items()
+        }
+    }
+
+    /// The body of a named struct (the opening `(` already consumed).
+    fn parse_struct_fields(&mut self) -> Result<Value, RonError> {
         let mut fields = Vec::new();
         loop {
             self.skip_trivia();
@@ -232,6 +255,35 @@ impl Parser {
             }
         }
         Ok(Value::Map(fields))
+    }
+
+    /// The body of a positional tuple (the opening `(` already consumed).
+    fn parse_tuple_items(&mut self) -> Result<Value, RonError> {
+        let mut items = Vec::new();
+        loop {
+            self.skip_trivia();
+            match self.peek() {
+                Some(')') => {
+                    self.bump();
+                    break;
+                }
+                None => return Err(self.err("unterminated tuple")),
+                _ => {}
+            }
+            items.push(self.parse_value()?);
+            self.skip_trivia();
+            match self.peek() {
+                Some(',') => {
+                    self.bump();
+                }
+                Some(')') => {
+                    self.bump();
+                    break;
+                }
+                _ => return Err(self.err("expected ',' or ')'")),
+            }
+        }
+        Ok(Value::List(items))
     }
 
     fn parse_list(&mut self) -> Result<Value, RonError> {
@@ -436,6 +488,30 @@ mod tests {
         let value = from_str(r#"( s: "a\tb\n", c: '\'' )"#).unwrap();
         assert_eq!(value.field("s").unwrap().as_str().unwrap(), "a\tb\n");
         assert_eq!(value.field("c").unwrap().as_char().unwrap(), '\'');
+    }
+
+    #[test]
+    fn parses_positional_tuples() {
+        // A tuple `(a, b, …)` reads as a list, distinct from a named struct.
+        let value = from_str(r#"( doors: [((1, 2), "r1_0", (3, 4))], n: (a: 5) )"#).unwrap();
+        let doors = value.field("doors").unwrap().as_list().unwrap();
+        let door = doors[0].as_list().unwrap();
+        assert_eq!(door.len(), 3);
+        assert_eq!(door[0].as_list().unwrap()[0].as_i32().unwrap(), 1);
+        assert_eq!(door[0].as_list().unwrap()[1].as_i32().unwrap(), 2);
+        assert_eq!(door[1].as_str().unwrap(), "r1_0");
+        assert_eq!(door[2].as_list().unwrap()[0].as_i32().unwrap(), 3);
+        // A named struct in the same document still parses as a map.
+        assert_eq!(
+            value
+                .field("n")
+                .unwrap()
+                .field("a")
+                .unwrap()
+                .as_i32()
+                .unwrap(),
+            5
+        );
     }
 
     #[test]

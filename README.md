@@ -182,8 +182,8 @@ plugs it into Bevy's asset pipeline), so there's no `serde`/`ron` crate to pull 
 
 ### Add or edit a room
 
-Rooms are ASCII grids in `assets/maps/<name>.map.ron`. There are no portals — a
-room just names the neighbour on each side (empty = a wall / bottomless edge):
+Rooms are ASCII grids in `assets/maps/<name>.map.ron`. Each edge is a **list of doors** —
+walk off the edge and you cross through one (empty list = a wall / bottomless edge):
 
 ```ron
 (
@@ -191,10 +191,13 @@ room just names the neighbour on each side (empty = a wall / bottomless edge):
     solid:  "#",                 // solid tiles
     spikes: "^",                 // deadly ground spikes
     rocks:  "R",                 // falling-rock spawners
-    north:  "r0_1",              // room reached off the top edge   (empty = none)
-    south:  "",                  // …bottom edge
-    east:   "r1_0",              // …right edge
-    west:   "",                  // …left edge
+    // Each door is ((origin_col, origin_row), "to_room", (dest_col, dest_row)):
+    //   origin = the cell on THIS edge you walk off; dest = where you land THERE.
+    north:  [((9, 0), "r0_1", (9, 19))],   // off the top edge → r0_1
+    south:  [],                            // …bottom edge (sealed)
+    east:   [((39, 1), "r1_0", (1, 2)),    // a top doorway and…
+             ((39, 20), "r1_0", (1, 19))], // …a bottom doorway, both → r1_0
+    west:   [],                            // …left edge
     teleports: [                 // teleporter pads (optional)
         // a pad at (col 1, row 1) → arrive at r3_2's cell (col 14, row 20)
         (origin_col: 1, origin_row: 1, to: "r3_2", dest_col: 14, dest_row: 20),
@@ -206,6 +209,14 @@ room just names the neighbour on each side (empty = a wall / bottomless edge):
     tiles: [ "######", "#.@E#", "######" ],   // grid, top to bottom; `@` = start, `E` = enemy
 )
 ```
+
+**Doors** carry their own coordinates, so a room places the player **exactly** where it
+wants — no shared door layout required. An edge can hold **several** doors (e.g. a top and
+a bottom doorway); the one you take is whichever door's `origin` is nearest where you
+crossed, and you appear at that door's `dest` cell (grid coords, `row` from the top).
+Doors are **one-way** by design: for a two-way passage, give the other room a door back.
+The level builder's **Door** brush writes these for you (see below); by grid convention,
+adjacent `r{col}_{row}` rooms also get a default door automatically.
 
 A teleporter is **pure coordinate data** — no grid glyph, so pads never use up tile
 characters. Each entry names its own cell (`origin_col`/`origin_row`) and its
@@ -231,8 +242,8 @@ on the world map and in the builder; when empty it falls back to the file key.
 Rooms are **discovered** from `assets/maps/` at startup, so just dropping a new
 `.map.ron` adds it — no code change. Rooms are named `r{col}_{row}` (`r0_0`
 bottom-left, the start); the grid is **unbounded** (columns/rows can be any
-non-negative integer). Doors line up because rooms share the same size and
-shaft/corridor positions.
+non-negative integer). Each door records its own destination cell, so rooms line up
+regardless of size — and the names only matter for the builder's grid auto-linking.
 
 When a room is **smaller than the screen**, the camera zooms in so the room fills
 the viewport; larger rooms stay at 1:1 and scroll.
@@ -254,7 +265,7 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | `X` | erase | `B` | recolour |
 | `Tab` | cycle brush | `Enter` | rename (type a name) |
 | `S` | save | `M` | room manager |
-| `Space` (Portal brush) | start a portal link | `Esc` | leave the builder |
+| `Space` (Portal/Door brush) | start a portal / door link | `Esc` | leave the builder |
 
 **Rooms** (`M`) — manage the world as a grid:
 
@@ -265,13 +276,20 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | `G` | grab / drop (reorder) | `R` `R` | reset to the default 12 |
 | `M` / `Esc` | back to tiles | | |
 
-The room manager scrolls, so you can place **unlimited** rooms. There are **no
-link controls**: connectivity is derived from the grid, so a room named
-`r{col}_{row}` is linked to its existing N/S/E/W neighbours automatically, and
-standard-size (40×22) rooms get their doors opened/sealed to match. Rooms can still
-be **any size** in the tile view, but a custom-sized room manages its own doors.
-The builder edits a Builder save's own copy on disk; the shipped Story levels stay
-read-only.
+The room manager scrolls, so you can place **unlimited** rooms. Grid adjacency gives
+you connectivity for free: a room named `r{col}_{row}` is auto-linked to its existing
+N/S/E/W neighbours with default doors, and standard-size (40×22) rooms get those doors
+opened/sealed to match. Rooms can still be **any size** in the tile view. For anything
+beyond the grid — a door to a non-adjacent room, or a second doorway on one edge — use
+the **Door** brush (below). The builder edits a Builder save's own copy on disk; the
+shipped Story levels stay read-only.
+
+**Doors** — `Tab` to the **Door** brush and paint an **origin** cell on the edge you
+want to leave from; the room manager opens so you pick the destination room (`Enter`) —
+then you paint the **landing** cell there. The builder files the door under the nearest
+edge, carves an opening at the origin so you can walk off, and saves the source room.
+Doors are **one-way** (repeat the other direction for a return trip). Press **`Esc`**
+before placing the landing cell to cancel — nothing is written until the link completes.
 
 **Portals** — `Tab` to the **Portal** brush and paint to drop the first endpoint;
 the room manager opens so you can pick the destination room (`Enter`) — **including
@@ -329,6 +347,14 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Reworked room connections into **coordinate doors**. Each edge is now a
+  list of [`Door`](src/world.rs)s — `((origin_col, origin_row), "to", (dest_col, dest_row))`
+  — replacing the old plain neighbour names. Walking off an edge takes the door nearest the
+  crossing and drops you at its `dest`, so a room places you **exactly** where it wants;
+  an edge can hold **multiple** doors (e.g. r0_0's two east doorways). The RON reader gained
+  positional-tuple parsing; the editor gained a **Door** brush (pick an origin, a room, then
+  a landing cell) and still auto-links grid-adjacent rooms with default doors. All 12 shipped
+  maps were converted. (Supersedes the same-day `*_entry` experiment.)
 - **2026-06-26** — Generalised arena respawning into a per-room **`fog_respawn`** flag
   ([`MapData`](src/world.rs), mirrored into [`BossFight::respawn`](src/boss.rs)). An arena
   with `fog_respawn: 1` re-arms on the next **bench rest** (transient `ClearedArenas`);

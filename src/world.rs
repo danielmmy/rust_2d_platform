@@ -3,12 +3,13 @@
 //! Maps are plain data ([`MapData`]) loaded from `assets/maps/*.map.ron` by our
 //! own RON reader (see [`crate::ron`]), so adding a level is just dropping a new
 //! file. Each map is an ASCII grid plus a legend (solid / spike / rock / start
-//! characters), a background colour, and the names of its four neighbours.
+//! characters), a background colour, and the [`Door`]s off its four edges.
 //!
-//! Rooms connect Hollow-Knight style: there are no portals. Walk off an edge and
-//! — if a neighbour is declared on that side — the room is swapped and the player
-//! reappears at the matching edge of the new room. The camera is bounded to the
-//! current room ([`crate::camera`]), so each room reads as its own space.
+//! Rooms connect Hollow-Knight style. Each edge carries a list of [`Door`]s: walk off
+//! the edge and the door nearest the crossing swaps in its target room, dropping the
+//! player at that door's recorded destination cell. (Teleporter pads, [`Teleport`], are
+//! the other way across.) The camera is bounded to the current room
+//! ([`crate::camera`]), so each room reads as its own space.
 
 use std::collections::HashMap;
 
@@ -57,6 +58,40 @@ pub struct EnemySpawn {
     pub row: i32,
 }
 
+/// A one-way passage out of a room. Walking off the edge nearest `origin` loads room
+/// `to` and drops the player at cell `dest`. An edge may carry several doors (e.g. a
+/// top and a bottom doorway); the one used is whichever door's `origin` is nearest the
+/// point where the player crossed. All cells are grid coords (row 0 = top). In RON a
+/// door is the tuple `((origin_col, origin_row), "to", (dest_col, dest_row))`.
+#[derive(Clone)]
+pub struct Door {
+    pub origin: (i32, i32),
+    pub to: String,
+    pub dest: (i32, i32),
+}
+
+/// Read one door tuple `((ocol, orow), "to", (dcol, drow))` from a parsed value.
+fn parse_door(v: &ron::Value) -> Result<Door, RonError> {
+    let items = v.as_list()?;
+    if items.len() != 3 {
+        return Err(RonError(
+            "a door must be ((col, row), \"room\", (col, row))".into(),
+        ));
+    }
+    let cell = |v: &ron::Value| -> Result<(i32, i32), RonError> {
+        let c = v.as_list()?;
+        if c.len() != 2 {
+            return Err(RonError("a door cell must be (col, row)".into()));
+        }
+        Ok((c[0].as_i32()?, c[1].as_i32()?))
+    };
+    Ok(Door {
+        origin: cell(&items[0])?,
+        to: items[1].as_str()?.to_string(),
+        dest: cell(&items[2])?,
+    })
+}
+
 /// A combatant in a room's **arena** (its `fog_wall` list). These spawn only once the
 /// player enters the room, and crossing the fog seals the exits until all are dead
 /// (see [`crate::boss`]). `boss` picks a boss over a normal enemy of `kind`.
@@ -79,14 +114,14 @@ pub struct MapData {
     pub spikes: String,
     /// Characters that spawn falling rocks (e.g. `"R"`).
     pub rocks: String,
-    /// Neighbouring map reached by walking off the top edge (empty = none).
-    pub north: String,
-    /// Neighbouring map reached by walking off the bottom edge (empty = none).
-    pub south: String,
-    /// Neighbouring map reached by walking off the right edge (empty = none).
-    pub east: String,
-    /// Neighbouring map reached by walking off the left edge (empty = none).
-    pub west: String,
+    /// Doors off the top edge (empty = a solid / bottomless edge). See [`Door`].
+    pub north: Vec<Door>,
+    /// Doors off the bottom edge.
+    pub south: Vec<Door>,
+    /// Doors off the right edge.
+    pub east: Vec<Door>,
+    /// Doors off the left edge.
+    pub west: Vec<Door>,
     /// Teleporter pads in this room (empty = none).
     pub teleports: Vec<Teleport>,
     /// Per-cell enemy types for `E` glyphs (cells without an entry use kind 0).
@@ -190,15 +225,23 @@ impl MapData {
             .unwrap_or(0)
             != 0;
 
+        // Each edge is a list of doors, `((ocol, orow), "to", (dcol, drow))`.
+        let doors = |name: &str| -> Result<Vec<Door>, RonError> {
+            match value.try_field(name) {
+                Some(list) => list.as_list()?.iter().map(parse_door).collect(),
+                None => Ok(Vec::new()),
+            }
+        };
+
         Ok(MapData {
             name: optional_str("name")?,
             solid: value.field("solid")?.as_str()?.to_string(),
             spikes: optional_str("spikes")?,
             rocks: optional_str("rocks")?,
-            north: optional_str("north")?,
-            south: optional_str("south")?,
-            east: optional_str("east")?,
-            west: optional_str("west")?,
+            north: doors("north")?,
+            south: doors("south")?,
+            east: doors("east")?,
+            west: doors("west")?,
             teleports,
             enemies,
             fog_wall,
@@ -261,9 +304,26 @@ impl MapData {
                 )
             })
             .collect();
+        // Each edge renders as a list of door tuples, one per line.
+        let door_list = |doors: &[Door]| -> String {
+            doors
+                .iter()
+                .map(|d| {
+                    format!(
+                        "        (({}, {}), \"{}\", ({}, {})),\n",
+                        d.origin.0, d.origin.1, d.to, d.dest.0, d.dest.1
+                    )
+                })
+                .collect()
+        };
+        let north = door_list(&self.north);
+        let south = door_list(&self.south);
+        let east = door_list(&self.east);
+        let west = door_list(&self.west);
         format!(
             "(\n    name: \"{}\",\n    solid: \"{}\",\n    spikes: \"{}\",\n    rocks: \"{}\",\n    \
-             north: \"{}\",\n    south: \"{}\",\n    east: \"{}\",\n    west: \"{}\",\n    \
+             north: [\n{north}    ],\n    south: [\n{south}    ],\n    \
+             east: [\n{east}    ],\n    west: [\n{west}    ],\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
              fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
@@ -271,10 +331,6 @@ impl MapData {
             self.solid,
             self.spikes,
             self.rocks,
-            self.north,
-            self.south,
-            self.east,
-            self.west,
             i32::from(self.fog_respawn),
             self.bg[0],
             self.bg[1],
@@ -282,14 +338,13 @@ impl MapData {
         )
     }
 
-    fn neighbor(&self, dir: Dir) -> Option<String> {
-        let name = match dir {
-            Dir::North => &self.north,
-            Dir::South => &self.south,
-            Dir::East => &self.east,
-            Dir::West => &self.west,
-        };
-        (!name.is_empty()).then(|| name.clone())
+    /// Every room this map links out to (across all four edges).
+    #[cfg(test)]
+    fn linked_rooms(&self) -> impl Iterator<Item = &str> {
+        [&self.north, &self.south, &self.east, &self.west]
+            .into_iter()
+            .flatten()
+            .map(|d| d.to.as_str())
     }
 }
 
@@ -323,23 +378,14 @@ impl AssetLoader for MapLoader {
     }
 }
 
-/// A cardinal direction of travel between rooms.
-#[derive(Clone, Copy)]
-pub(crate) enum Dir {
-    North,
-    South,
-    East,
-    West,
-}
-
 /// How the player should be placed when a room loads.
 #[derive(Clone)]
 pub(crate) enum Entry {
     /// The world's starting position (the `@` marker in the grid).
     Start,
-    /// Arrived by walking off an edge; carries the direction travelled and the
-    /// player's position along that edge (used to line up horizontal corridors).
-    FromEdge(Dir, f32),
+    /// Arrived by walking through a [`Door`]; place the player at the door's
+    /// destination cell `(col, row)` (grid coords, row 0 = top).
+    Edge(i32, i32),
     /// Arrived through a teleporter; place the player at the destination cell
     /// `(col, row)` (grid coords, row 0 = top) recorded on the pad.
     Teleport(i32, i32),
@@ -435,10 +481,10 @@ pub(crate) struct GameAssets {
 #[derive(Resource, Default)]
 pub(crate) struct CurrentRoom {
     pub(crate) name: String,
-    north: Option<String>,
-    south: Option<String>,
-    east: Option<String>,
-    west: Option<String>,
+    north: Vec<Door>,
+    south: Vec<Door>,
+    east: Vec<Door>,
+    west: Vec<Door>,
     size: Vec2,
 }
 
@@ -530,11 +576,6 @@ pub(crate) fn discover_rooms(dir: &str) -> Vec<String> {
 }
 /// Grid character marking the player's start position in the starting room.
 pub(crate) const START_MARKER: char = '@';
-/// Left tile column of the 2-wide vertical shaft shared by every room.
-const SHAFT_COL: f32 = 9.0;
-/// How far inside a room (in pixels) the player appears after a transition.
-const INSET: f32 = TILE * 1.6;
-
 pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
@@ -721,24 +762,13 @@ fn enter_playing(
     });
 }
 
-/// Where the player lands when a room loads, given how they entered it. `teleport`
-/// is the resolved destination-cell centre (falls back to `start` if out of range).
-fn entry_position(entry: &Entry, room: Vec2, start: Vec2, teleport: Vec2) -> Vec2 {
+/// Where the player lands when a room loads, given how they entered it. Everything but
+/// a fresh `Start` lands on a recorded destination cell (`cell`, already resolved to a
+/// world centre and clamped in range): a door's `dest`, a teleporter pad, or a bench.
+fn entry_position(entry: &Entry, start: Vec2, cell: Vec2) -> Vec2 {
     match entry {
         Entry::Start => start,
-        // Walked east → appear at the west corridor (and vice-versa), keeping the
-        // same height so ground-level corridors line up.
-        Entry::FromEdge(Dir::East, y) => Vec2::new(INSET, *y),
-        Entry::FromEdge(Dir::West, y) => Vec2::new(room.x - INSET, *y),
-        // Fell south → drop in at the top onto the catch ledge beside the shaft.
-        Entry::FromEdge(Dir::South, _) => Vec2::new(12.5 * TILE, room.y - INSET),
-        // Climbed north → land on solid floor just left of the shaft's floor gap
-        // (clear of both the shaft and any left-corner spikes).
-        Entry::FromEdge(Dir::North, _) => {
-            Vec2::new((SHAFT_COL - 2.0) * TILE + TILE / 2.0, TILE * 2.0)
-        }
-        // Teleported / respawned at a bench → land on the recorded cell.
-        Entry::Teleport(..) | Entry::Bench(..) => teleport,
+        Entry::Edge(..) | Entry::Teleport(..) | Entry::Bench(..) => cell,
     }
 }
 
@@ -945,10 +975,11 @@ fn handle_load_map(
         }
     }
 
-    // Resolve a destination cell (teleporter or bench; grid coords, row 0 = top) to
-    // a world centre, flipping the row so y points up. Out-of-range falls to `start`.
-    let teleport_pos = match load.entry {
-        Entry::Teleport(col, row) | Entry::Bench(col, row)
+    // Resolve a destination cell (a door's `dest`, a teleporter pad, or a bench; grid
+    // coords, row 0 = top) to a world centre, flipping the row so y points up.
+    // Out-of-range falls back to `start`.
+    let cell_pos = match load.entry {
+        Entry::Edge(col, row) | Entry::Teleport(col, row) | Entry::Bench(col, row)
             if (0..width).contains(&col) && (0..height).contains(&row) =>
         {
             let world_row = height - 1 - row;
@@ -961,15 +992,15 @@ fn handle_load_map(
     };
 
     let room = Vec2::new(width as f32 * TILE, height as f32 * TILE);
-    let pos = entry_position(&load.entry, room, start_pos, teleport_pos);
+    let pos = entry_position(&load.entry, start_pos, cell_pos);
 
-    // Record the room's name, neighbours + size for edge detection and the camera.
+    // Record the room's name, doors + size for edge detection and the camera.
     *current = CurrentRoom {
         name: load.map.clone(),
-        north: map.neighbor(Dir::North),
-        south: map.neighbor(Dir::South),
-        east: map.neighbor(Dir::East),
-        west: map.neighbor(Dir::West),
+        north: map.north.clone(),
+        south: map.south.clone(),
+        east: map.east.clone(),
+        west: map.west.clone(),
         size: room,
     };
     room_view.size = room;
@@ -1013,33 +1044,53 @@ fn detect_transitions(
     let room = current.size;
 
     if cooldown.0 <= 0.0 {
-        let target = if pos.x < 0.0 {
-            current.west.clone().map(|m| (m, Dir::West, pos.y))
+        // Pick which edge was crossed, then the door on it nearest the crossing point
+        // (vertical edges sort by the player's `y`, horizontal edges by `x`).
+        let door = if pos.x < 0.0 {
+            nearest_door(&current.west, pos.y, room, true)
         } else if pos.x > room.x {
-            current.east.clone().map(|m| (m, Dir::East, pos.y))
+            nearest_door(&current.east, pos.y, room, true)
         } else if pos.y > room.y {
-            current.north.clone().map(|m| (m, Dir::North, pos.x))
+            nearest_door(&current.north, pos.x, room, false)
         } else if pos.y < 0.0 {
-            current.south.clone().map(|m| (m, Dir::South, pos.x))
+            nearest_door(&current.south, pos.x, room, false)
         } else {
             None
         };
 
-        if let Some((map, dir, coord)) = target {
+        if let Some(door) = door {
             load.write(LoadMap {
-                map,
-                entry: Entry::FromEdge(dir, coord),
+                map: door.to.clone(),
+                entry: Entry::Edge(door.dest.0, door.dest.1),
             });
             return;
         }
     }
 
-    // Fell into a bottomless pit (no room below): take a hit. The damage system
+    // Fell into a bottomless pit (no door below): take a hit. The damage system
     // respawns at the room entrance (no ground to knock back to), or the last bench
     // if it was the final heart.
-    if pos.y < -TILE && current.south.is_none() {
+    if pos.y < -TILE && current.south.is_empty() {
         hurt.write(Hurt::Pit);
     }
+}
+
+/// The door on an edge nearest the crossing point. `crossing` is the player's position
+/// along the edge (world units): `y` on a `vertical` (east/west) edge, otherwise `x`.
+fn nearest_door(doors: &[Door], crossing: f32, room: Vec2, vertical: bool) -> Option<&Door> {
+    doors.iter().min_by(|a, b| {
+        let axis = |d: &Door| {
+            if vertical {
+                // Grid row 0 is the top, so flip to a world `y`.
+                room.y - (d.origin.1 as f32 + 0.5) * TILE
+            } else {
+                (d.origin.0 as f32 + 0.5) * TILE
+            }
+        };
+        (axis(a) - crossing)
+            .abs()
+            .total_cmp(&(axis(b) - crossing).abs())
+    })
 }
 
 /// While the boss arena is sealed, keep the player inside the room: the locked exits
@@ -1238,13 +1289,11 @@ mod tests {
         // symmetric — one-way passages are allowed, and the builder can author
         // rooms — but a dangling link is a bug.)
         for (name, map) in &maps {
-            for dir in [Dir::North, Dir::South, Dir::East, Dir::West] {
-                if let Some(target) = map.neighbor(dir) {
-                    assert!(
-                        maps.contains_key(&target),
-                        "{name}: links to unknown room '{target}'"
-                    );
-                }
+            for target in map.linked_rooms() {
+                assert!(
+                    maps.contains_key(target),
+                    "{name}: links to unknown room '{target}'"
+                );
             }
             // Teleporters: origin must be in this room and dest in a real room.
             let dims = |m: &MapData| {
@@ -1309,10 +1358,25 @@ mod tests {
             solid: "#".to_string(),
             spikes: "^".to_string(),
             rocks: "R".to_string(),
-            north: "r0_1".to_string(),
-            south: String::new(),
-            east: "r1_0".to_string(),
-            west: String::new(),
+            north: vec![Door {
+                origin: (1, 0),
+                to: "r0_1".to_string(),
+                dest: (1, 2),
+            }],
+            south: Vec::new(),
+            east: vec![
+                Door {
+                    origin: (3, 1),
+                    to: "r1_0".to_string(),
+                    dest: (0, 1),
+                },
+                Door {
+                    origin: (3, 2),
+                    to: "r1_0".to_string(),
+                    dest: (0, 2),
+                },
+            ],
+            west: Vec::new(),
             teleports: vec![Teleport {
                 origin_col: 1,
                 origin_row: 1,
@@ -1344,11 +1408,18 @@ mod tests {
         let parsed = MapData::from_ron(&original.to_ron()).expect("round-trip parse");
         assert_eq!(parsed.name, original.name);
         assert_eq!(parsed.solid, original.solid);
-        assert_eq!(parsed.north, original.north);
-        assert_eq!(parsed.south, original.south);
-        assert_eq!(parsed.east, original.east);
         assert_eq!(parsed.bg, original.bg);
         assert_eq!(parsed.tiles, original.tiles);
+        // Doors round-trip: a single north door and two east doors to the same room.
+        assert_eq!(parsed.north.len(), 1);
+        assert_eq!(parsed.north[0].origin, (1, 0));
+        assert_eq!(parsed.north[0].to, "r0_1");
+        assert_eq!(parsed.north[0].dest, (1, 2));
+        assert!(parsed.south.is_empty());
+        assert_eq!(parsed.east.len(), 2);
+        assert_eq!(parsed.east[0].origin, (3, 1));
+        assert_eq!(parsed.east[1].dest, (0, 2));
+        assert!(parsed.west.is_empty());
         assert_eq!(parsed.teleports.len(), 1);
         assert_eq!(parsed.teleports[0].origin_col, 1);
         assert_eq!(parsed.teleports[0].origin_row, 1);

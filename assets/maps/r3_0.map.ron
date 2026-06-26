@@ -3,10 +3,10 @@
     solid: "#",
     spikes: "^",
     rocks: "R",
-    north: "r3_1",
-    south: "",
-    east: "",
-    west: "r2_0",
+    north: [((9, 0), "r3_1", (9, 19))],
+    south: [],
+    east: [],
+    west: [((0, 19), "r2_0", (38, 19))],
     teleports: [
     ],
     enemies: [
