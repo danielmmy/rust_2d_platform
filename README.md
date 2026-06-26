@@ -294,6 +294,17 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — **Letterboxed** the view so non-16:9 windows no longer **stretch**
+  the picture: a `letterbox` system confines the camera's render viewport to the
+  largest centred 16:9 rectangle that fits the window, with bars filling the rest. The
+  fitting maths is a small pure function (`letterbox_rect`) with unit tests.
+- **2026-06-26** — Fixed the camera **spilling outside the room when the window is
+  resized**. The default 2D projection scales its visible world area with the window
+  (`ScalingMode::WindowSize`), but the room-fit zoom, the edge clamping, and the HUD
+  anchors all assume a fixed 960×540 viewport — so a bigger window revealed area
+  outside the room and skipped the small-room zoom. The camera is now locked to a
+  **fixed 960×540 logical viewport** (`ScalingMode::Fixed`); resizing scales that
+  canvas instead.
 - **2026-06-26** — The **pause menu** gained a **Character** entry that opens a
   read-only **status sheet** sub-screen (stats, energy, any pending bloodstain) with a
   *Back* row. It reuses the same source lines as the `C` overlay via a shared

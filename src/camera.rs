@@ -1,8 +1,18 @@
 //! A 2D camera that follows the player but stays bounded to the current room, and
 //! **zooms in** to fill the screen when a room is smaller than the viewport. It
 //! snaps on a room transition and glides otherwise.
+//!
+//! The projection is locked to a **fixed 960×540 logical viewport**
+//! ([`ScalingMode::Fixed`]) so the fit/clamp maths below — and the HUD anchors that
+//! share [`VIEW_HALF`] — stay correct at any window size. Resizing scales this canvas
+//! to the window rather than revealing more of the world (which would let the view
+//! spill outside the room). To keep that from **stretching** on a non-16:9 window,
+//! [`letterbox`] confines rendering to the largest centred 16:9 rectangle that fits,
+//! leaving black bars on the extra side.
 
+use bevy::camera::{ScalingMode, Viewport};
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 use crate::GameSet;
 use crate::menu::Paused;
@@ -23,6 +33,8 @@ impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_camera)
             .add_systems(Update, follow.in_set(GameSet::Camera))
+            // Keep the render area letterboxed to 16:9 at any window size/aspect.
+            .add_systems(Update, letterbox)
             // Overlays (menus / world map / builder) are drawn at 1:1, so un-zoom
             // whenever we're not in active gameplay.
             .add_systems(
@@ -35,7 +47,19 @@ impl Plugin for CameraPlugin {
 }
 
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, GameCamera));
+    commands.spawn((
+        Camera2d,
+        // Always show exactly a 960×540 world rectangle (times `ortho.scale`),
+        // independent of the window size; resizing just scales the canvas.
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::Fixed {
+                width: VIEW_HALF.x * 2.0,
+                height: VIEW_HALF.y * 2.0,
+            },
+            ..OrthographicProjection::default_2d()
+        }),
+        GameCamera,
+    ));
 }
 
 /// Zoom factor that makes a small room fill the viewport; never below 1 (large
@@ -101,5 +125,88 @@ fn reset_zoom(mut camera: Query<&mut Projection, With<GameCamera>>) {
         && let Projection::Orthographic(ortho) = &mut *projection
     {
         ortho.scale = 1.0;
+    }
+}
+
+/// The largest 16:9 rectangle that fits inside a `window` of physical pixels,
+/// centred — returns `(top_left, size)`. Black bars fill whatever's left over.
+fn letterbox_rect(window: UVec2) -> (UVec2, UVec2) {
+    let target = VIEW_HALF.x / VIEW_HALF.y; // 16:9
+    let (w, h) = if window.x as f32 / window.y as f32 > target {
+        // Too wide: full height, bars on the left/right.
+        (((window.y as f32) * target).round() as u32, window.y)
+    } else {
+        // Too tall (or exact): full width, bars on the top/bottom.
+        (window.x, ((window.x as f32) / target).round() as u32)
+    };
+    let size = UVec2::new(w.min(window.x), h.min(window.y));
+    let pos = (window - size) / 2;
+    (pos, size)
+}
+
+/// Confine the camera's render target to a centred 16:9 viewport so the fixed
+/// 960×540 projection fills it without stretching, whatever the window's aspect.
+fn letterbox(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut camera: Query<&mut Camera, With<GameCamera>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Ok(mut camera) = camera.single_mut() else {
+        return;
+    };
+    let size = window.physical_size();
+    if size.x == 0 || size.y == 0 {
+        return; // minimised — leave the viewport be
+    }
+    let (position, view_size) = letterbox_rect(size);
+    // Only write when it actually changes, to avoid per-frame change detection.
+    let unchanged = camera
+        .viewport
+        .as_ref()
+        .is_some_and(|v| v.physical_position == position && v.physical_size == view_size);
+    if !unchanged {
+        camera.viewport = Some(Viewport {
+            physical_position: position,
+            physical_size: view_size,
+            ..default()
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn aspect(size: UVec2) -> f32 {
+        size.x as f32 / size.y as f32
+    }
+
+    #[test]
+    fn exact_16_9_fills_the_window() {
+        let (pos, size) = letterbox_rect(UVec2::new(1920, 1080));
+        assert_eq!(pos, UVec2::ZERO);
+        assert_eq!(size, UVec2::new(1920, 1080));
+    }
+
+    #[test]
+    fn wide_window_gets_side_bars() {
+        let (pos, size) = letterbox_rect(UVec2::new(2000, 1000));
+        assert_eq!(size.y, 1000); // full height
+        assert!(size.x < 2000); // narrower than the window
+        assert!((aspect(size) - 16.0 / 9.0).abs() < 0.01);
+        assert_eq!(pos.y, 0);
+        assert_eq!(pos.x, (2000 - size.x) / 2); // centred horizontally
+    }
+
+    #[test]
+    fn tall_window_gets_top_bottom_bars() {
+        let (pos, size) = letterbox_rect(UVec2::new(1000, 1000));
+        assert_eq!(size.x, 1000); // full width
+        assert!(size.y < 1000); // shorter than the window
+        assert!((aspect(size) - 16.0 / 9.0).abs() < 0.01);
+        assert_eq!(pos.x, 0);
+        assert_eq!(pos.y, (1000 - size.y) / 2); // centred vertically
     }
 }
