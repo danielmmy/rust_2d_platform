@@ -212,16 +212,19 @@ Drop your own PNGs over the placeholders in `assets/sprites/`
 (`tile.png`, `spikes.png`, `rock.png`). Sizes are set in code via `custom_size`, so
 any resolution works — the world keeps the same scale.
 
-**`player.png` and `portal.png` are sprite sheets** — each an N×M grid of equal
-frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing every frame
-from the image ÷ grid, so a re-drawn sheet of the same grid just works):
+**`player.png`, `portal.png`, and `bench.png` are sprite sheets** — each an N×M
+grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
+every frame from the image ÷ grid, so a re-drawn sheet of the same grid just works):
 
-- `player.png` is **4×3**: row 0 = idle (last frame blinks), row 1 = jump, row 2 =
-  damage. Driven by state — grounded → idle, airborne → jump, i-frames → damage;
-  idle/damage **loop**, the jump plays **once across the arc** (launch → apex →
-  fall), keyed to vertical velocity.
-- `portal.png` is **4×2**: row 0 = idle halo (loops), row 1 = active (loops while
-  the player stands on the pad).
+- `player.png` is **6×4** — a **side-profile** character facing right (the
+  [`player`](src/player.rs) flips it to face left, so it faces the way you walk).
+  Rows: 0 = idle (last frame blinks), 1 = walk, 2 = jump, 3 = damage. Driven by
+  state — damage → jump (airborne) → walk (moving) → idle; idle/walk/damage **loop**,
+  the jump plays **once across the arc** (launch → apex → fall), keyed to velocity.
+- `portal.png` is **6×2**: row 0 = idle halo, row 1 = active (while the player is on
+  the pad) — an upright vortex, both looping.
+- `bench.png` is **6×1**: a static wooden bench whose **fairy lights** drift and
+  twinkle (one looping clip).
 
 For a different grid, change the `*_COLS`/`*_ROWS` and `Clip` constants in
 [`anim`](src/anim.rs). To animate something new, load a sheet, attach a
@@ -237,6 +240,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Redrew the sprites with **side-on** orientation and smoother,
+  more-frame animations: the player is a side-profile character (faces the walk
+  direction) with idle/**walk**/jump/damage; the portal is an upright vortex; and
+  **benches** are now a drawn wooden seat with drifting **fairy lights**.
 - **2026-06-25** — Made animation **extensible** (a generic `SpriteAnimation` +
   clip/atlas core in [`anim`](src/anim.rs)) and gave **portals** a sprite sheet
   (`portal.png`, 4×2): an idle waving halo that flares **active** while the player

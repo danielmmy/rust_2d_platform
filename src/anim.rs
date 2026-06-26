@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use crate::health::Invuln;
 use crate::player::{JumpState, MovementConfig, Player, Velocity};
 use crate::state::GameState;
-use crate::world::{GameAssets, Teleporter};
+use crate::world::{Bench, GameAssets, Teleporter};
 
 // --- generic core --------------------------------------------------------
 
@@ -127,6 +127,7 @@ impl Plugin for AnimationPlugin {
             (
                 attach_player,
                 attach_portals,
+                attach_benches,
                 control_player,
                 control_portals,
                 advance_animations,
@@ -139,27 +140,37 @@ impl Plugin for AnimationPlugin {
 
 // --- player --------------------------------------------------------------
 
-const PLAYER_COLS: u32 = 4;
-const PLAYER_ROWS: u32 = 3;
+const PLAYER_COLS: u32 = 6;
+const PLAYER_ROWS: u32 = 4;
+/// Minimum horizontal speed (px/s) before the walk cycle plays.
+const WALK_SPEED_MIN: f32 = 12.0;
 
-// Frame rows in the 4×3 sheet: 0 = idle/blink, 1 = jump, 2 = damage.
+// Frame rows in the 6×4 sheet: 0 = idle/blink, 1 = walk, 2 = jump, 3 = damage.
+// The sprite faces right; `player` movement flips it to face left, Hollow-Knight
+// style, so facing follows the walk direction.
 const PLAYER_IDLE: Clip = Clip {
     first: 0,
     count: 4,
     fps: 5.0,
     playback: Playback::Loop,
 };
+const PLAYER_WALK: Clip = Clip {
+    first: 6,
+    count: 6,
+    fps: 10.0,
+    playback: Playback::Loop,
+};
 /// The jump is a single run mapped across the arc (see [`control_player`]).
 const PLAYER_JUMP: Clip = Clip {
-    first: 4,
-    count: 2,
+    first: 12,
+    count: 4,
     fps: 6.0,
     playback: Playback::Manual,
 };
 const PLAYER_DAMAGE: Clip = Clip {
-    first: 8,
-    count: 2,
-    fps: 12.0,
+    first: 18,
+    count: 4,
+    fps: 14.0,
     playback: Playback::Loop,
 };
 
@@ -192,7 +203,7 @@ fn attach_player(
         .insert(SpriteAnimation::new(PLAYER_IDLE));
 }
 
-/// Pick the player's clip from state: damage (i-frames) > jump (airborne) > idle.
+/// Pick the player's clip from state: damage > jump (airborne) > walk > idle.
 fn control_player(
     invuln: Res<Invuln>,
     cfg: Res<MovementConfig>,
@@ -216,6 +227,8 @@ fn control_player(
         let progress = (0.5 - 0.5 * velocity.0.y / denom).clamp(0.0, 1.0);
         let last = anim.clip.count.saturating_sub(1);
         anim.frame = ((progress * anim.clip.count as f32) as usize).min(last);
+    } else if velocity.0.x.abs() > WALK_SPEED_MIN {
+        anim.play(PLAYER_WALK);
     } else {
         anim.play(PLAYER_IDLE);
     }
@@ -223,20 +236,20 @@ fn control_player(
 
 // --- portals -------------------------------------------------------------
 
-const PORTAL_COLS: u32 = 4;
+const PORTAL_COLS: u32 = 6;
 const PORTAL_ROWS: u32 = 2;
 
-// Frame rows in the 4×2 sheet: 0 = idle halo, 1 = active.
+// Frame rows in the 6×2 sheet: 0 = idle halo, 1 = active.
 const PORTAL_IDLE: Clip = Clip {
     first: 0,
-    count: 4,
-    fps: 6.0,
+    count: 6,
+    fps: 8.0,
     playback: Playback::Loop,
 };
 const PORTAL_ACTIVE: Clip = Clip {
-    first: 4,
-    count: 4,
-    fps: 14.0,
+    first: 6,
+    count: 6,
+    fps: 16.0,
     playback: Playback::Loop,
 };
 
@@ -290,5 +303,53 @@ fn control_portals(
     for (transform, mut anim) in &mut portals {
         let active = transform.translation.truncate().distance(player_pos) < PORTAL_ACTIVE_DIST;
         anim.play(if active { PORTAL_ACTIVE } else { PORTAL_IDLE });
+    }
+}
+
+// --- benches -------------------------------------------------------------
+
+const BENCH_COLS: u32 = 6;
+const BENCH_ROWS: u32 = 1;
+
+/// The bench seat is static; this clip just drifts its fairy lights. It only loops
+/// (no controller needed), so the generic [`advance_animations`] does the rest.
+const BENCH_IDLE: Clip = Clip {
+    first: 0,
+    count: 6,
+    fps: 6.0,
+    playback: Playback::Loop,
+};
+
+/// Give each bench a texture atlas + its looping fairy-light animation once loaded.
+#[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
+fn attach_benches(
+    mut commands: Commands,
+    assets: Res<GameAssets>,
+    images: Res<Assets<Image>>,
+    mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+    mut cache: ResMut<AtlasCache>,
+    mut benches: Query<(Entity, &mut Sprite), (With<Bench>, Without<SpriteAnimation>)>,
+) {
+    if benches.is_empty() {
+        return;
+    }
+    let Some(layout) = atlas_for(
+        &mut cache,
+        &mut layouts,
+        &images,
+        &assets.bench,
+        BENCH_COLS,
+        BENCH_ROWS,
+    ) else {
+        return;
+    };
+    for (entity, mut sprite) in &mut benches {
+        sprite.texture_atlas = Some(TextureAtlas {
+            layout: layout.clone(),
+            index: 0,
+        });
+        commands
+            .entity(entity)
+            .insert(SpriteAnimation::new(BENCH_IDLE));
     }
 }

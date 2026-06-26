@@ -269,15 +269,13 @@ impl Default for TeleportArmed {
 /// Grid glyph marking a bench: a checkpoint that saves the game, refills hearts,
 /// resets enemies, and becomes the player's respawn point.
 pub(crate) const BENCH_GLYPH: char = 'B';
-/// Bench pad colour (a warm square — no sprite asset needed).
-const BENCH_COLOR: Color = Color::srgb(0.85, 0.62, 0.32);
 /// Half-extents of a bench's "rest" trigger area.
 const BENCH_HALF: Vec2 = Vec2::new(TILE * 0.5, TILE * 0.5);
 
 /// A spawned bench, carrying its own grid cell so resting can record it as the
 /// respawn point.
 #[derive(Component)]
-struct Bench {
+pub(crate) struct Bench {
     col: i32,
     row: i32,
 }
@@ -313,6 +311,7 @@ pub(crate) struct GameAssets {
     pub(crate) player: Handle<Image>,
     pub(crate) spikes: Handle<Image>,
     pub(crate) portal: Handle<Image>,
+    pub(crate) bench: Handle<Image>,
 }
 
 /// The room the player is currently in: its name, neighbours and pixel size.
@@ -435,6 +434,7 @@ fn load_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
         player: asset_server.load("sprites/player.png"),
         spikes: asset_server.load("sprites/spikes.png"),
         portal: asset_server.load("sprites/portal.png"),
+        bench: asset_server.load("sprites/bench.png"),
     });
     commands.insert_resource(RockSprite(asset_server.load("sprites/rock.png")));
 }
@@ -453,6 +453,7 @@ fn wait_for_load(
         && asset_server.is_loaded_with_dependencies(assets.player.id())
         && asset_server.is_loaded_with_dependencies(assets.spikes.id())
         && asset_server.is_loaded_with_dependencies(assets.portal.id())
+        && asset_server.is_loaded_with_dependencies(assets.bench.id())
         && asset_server.is_loaded_with_dependencies(rock.0.id());
 
     if maps_ready && sprites_ready {
@@ -596,7 +597,7 @@ fn handle_load_map(
                     MapEntity,
                     Bench { col, row: r as i32 },
                     Sprite {
-                        color: BENCH_COLOR,
+                        image: assets.bench.clone(),
                         custom_size: Some(Vec2::splat(TILE)),
                         ..default()
                     },
