@@ -115,8 +115,9 @@ room just names the neighbour on each side (empty = a wall / bottomless edge):
 
 A teleporter is just another glyph in the grid (use any unused character). For a
 two-way link, give both rooms a pad with the **same glyph**, each pointing `to`
-the other; the destination pad is found by matching that glyph. The pad only fires
-as you step **onto** it, so you can stand on the one you arrive on.
+the other; the destination pad is found by matching that glyph. A pad won't fire
+again until you've stepped ~1.5 tiles clear of it, so you land safely on the
+destination pad and don't bounce back and forth.
 
 Each room has an optional **display name** (e.g. "Forest Glade", "Meadow") shown
 on the world map and in the builder; when empty it falls back to the file key.
@@ -190,6 +191,9 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — Teleporters no longer chain rapid teleports: a pad re-arms only
+  once the player is ~1.5 tiles clear of every pad (a dead zone larger than the
+  trigger), so you can't bounce back and forth or fire on the pad you arrive on.
 - **2026-06-25** — The level builder can now **author portals**: a Portal brush
   drops the first endpoint, the room manager opens to pick the destination room,
   and painting there completes the two-way link (shared auto-assigned glyph, both

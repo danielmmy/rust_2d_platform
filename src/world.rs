@@ -236,8 +236,9 @@ struct Teleporter {
     glyph: char,
 }
 
-/// Whether the player has cleared every teleporter pad since the last teleport, so
-/// a pad fires only on entry — not while standing on the one you arrived on.
+/// Whether teleporters are ready to fire. Disarmed on each teleport (and on every
+/// room load), and only re-armed once the player is [`TELEPORT_REARM`] from every
+/// pad — so a pad can't chain rapid teleports or fire on the one you arrive on.
 #[derive(Resource)]
 struct TeleportArmed(bool);
 
@@ -251,6 +252,10 @@ impl Default for TeleportArmed {
 const TELEPORT_COLOR: Color = Color::srgb(0.45, 0.85, 1.0);
 /// Half-extents of a teleporter's trigger area.
 const TELEPORT_HALF: Vec2 = Vec2::new(TILE * 0.45, TILE * 0.5);
+/// How far the player must move from a pad before it re-arms. Larger than the
+/// trigger, so there's a dead zone (~1.5 tiles) between using a pad and it being
+/// able to fire again — you must step clear before re-entering.
+const TELEPORT_REARM: f32 = TILE * 1.5;
 
 #[derive(Resource)]
 pub(crate) struct GameAssets {
@@ -650,8 +655,9 @@ fn detect_transitions(
 }
 
 /// Send the player to a linked room when they step onto a teleporter pad. A pad
-/// fires only on entry: [`TeleportArmed`] re-arms once the player has cleared every
-/// pad, so the one you land on doesn't bounce you straight back.
+/// fires only when [`TeleportArmed`], which re-arms only once the player is
+/// [`TELEPORT_REARM`] clear of every pad — the dead zone between that and the
+/// (smaller) trigger stops a single pad chaining teleports or firing on arrival.
 fn detect_teleport(
     mut armed: ResMut<TeleportArmed>,
     teleporters: Query<(&Transform, &Teleporter)>,
@@ -663,26 +669,27 @@ fn detect_teleport(
     };
     let player_pos = player_tf.translation.truncate();
 
-    let on_pad = teleporters.iter().find_map(|(tf, tp)| {
-        let delta = (tf.translation.truncate() - player_pos).abs();
-        let touching =
-            delta.x < TELEPORT_HALF.x + PLAYER_HALF.x && delta.y < TELEPORT_HALF.y + PLAYER_HALF.y;
-        touching.then(|| (tp.to.clone(), tp.glyph))
-    });
+    // Re-arm only when well clear of every pad (not merely off the trigger box).
+    let clear = teleporters
+        .iter()
+        .all(|(tf, _)| player_pos.distance(tf.translation.truncate()) > TELEPORT_REARM);
+    if clear {
+        armed.0 = true;
+    }
+    if !armed.0 {
+        return;
+    }
 
-    match on_pad {
-        // Clear of every pad → ready to fire on the next one entered.
-        None => armed.0 = true,
-        // Stepped onto a pad while armed → teleport and disarm.
-        Some((to, glyph)) if armed.0 => {
-            armed.0 = false;
-            load.write(LoadMap {
-                map: to,
-                entry: Entry::Teleport(glyph),
-            });
-        }
-        // On a pad but not armed (e.g. just arrived) → wait until we step off.
-        Some(_) => {}
+    // Armed and overlapping a pad → teleport, then disarm until clear again.
+    if let Some((_, tp)) = teleporters.iter().find(|(tf, _)| {
+        let delta = (tf.translation.truncate() - player_pos).abs();
+        delta.x < TELEPORT_HALF.x + PLAYER_HALF.x && delta.y < TELEPORT_HALF.y + PLAYER_HALF.y
+    }) {
+        armed.0 = false;
+        load.write(LoadMap {
+            map: tp.to.clone(),
+            entry: Entry::Teleport(tp.glyph),
+        });
     }
 }
 
