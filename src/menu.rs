@@ -162,8 +162,11 @@ impl Plugin for MenuPlugin {
             )
             .add_systems(
                 Update,
-                toggle_pause
-                    .run_if(in_state(GameState::Playing).and_then(in_state(MapView::Closed))),
+                toggle_pause.run_if(
+                    in_state(GameState::Playing)
+                        .and_then(in_state(MapView::Closed))
+                        .and_then(in_state(crate::stats::CharMenu::Closed)),
+                ),
             )
             .add_systems(OnEnter(Paused::Paused), spawn_pause_menu)
             .add_systems(OnExit(Paused::Paused), despawn_menu)

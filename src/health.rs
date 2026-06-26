@@ -13,7 +13,8 @@ use crate::hazards::RespawnPoint;
 use crate::player::{Player, Velocity};
 use crate::save::Save;
 use crate::state::GameState;
-use crate::world::{Entry, LoadMap, START_MAP, TeleportArmed};
+use crate::stats::{Died, Stats};
+use crate::world::{CurrentRoom, Entry, LoadMap, START_MAP, TeleportArmed};
 
 /// The player's hearts.
 #[derive(Resource)]
@@ -63,6 +64,9 @@ const VIEW_HALF: Vec2 = Vec2::new(480.0, 270.0);
 const HEART_SIZE: f32 = 24.0;
 const HEART_FULL: Color = Color::srgb(0.9, 0.2, 0.3);
 const HEART_EMPTY: Color = Color::srgb(0.28, 0.12, 0.14);
+/// How many heart icons to spawn. Vitality can grow `max` up to this, so we make
+/// the row big enough and just hide the icons beyond the current `max`.
+const HEART_CAP: i32 = 12;
 
 pub struct HealthPlugin;
 
@@ -95,9 +99,12 @@ fn apply_damage(
     mut invuln: ResMut<Invuln>,
     mut stun: ResMut<Stun>,
     mut armed: ResMut<TeleportArmed>,
+    stats: Res<Stats>,
     save: Res<Save>,
+    current: Res<CurrentRoom>,
     respawn: Res<RespawnPoint>,
     mut load: MessageWriter<LoadMap>,
+    mut died: MessageWriter<Died>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
 ) {
     // Drain the queue (so none go stale); take the first hit's source. One hit per
@@ -121,7 +128,16 @@ fn apply_damage(
     };
 
     if health.current <= 0 {
-        // Out of hearts: refill and return to the last bench (else the start room).
+        // Out of hearts: drop a bloodstain here (the death spot — but for a pit, the
+        // reachable room entry), then refill and return to the last bench.
+        let death_pos = match hurt {
+            Hurt::Pit => respawn.0,
+            Hurt::From(_) => transform.translation.truncate(),
+        };
+        died.write(Died {
+            pos: death_pos,
+            room: current.name.clone(),
+        });
         health.current = health.max;
         let (map, entry) = if save.has_bench() {
             (
@@ -137,7 +153,7 @@ fn apply_damage(
 
     match hurt {
         // Knock the player back away from what hit them, and stun briefly so the
-        // hit registers regardless of input.
+        // hit registers regardless of input. Poise shortens the stagger.
         Hurt::From(source) => {
             let dir = if transform.translation.x >= source.x {
                 1.0
@@ -145,7 +161,7 @@ fn apply_damage(
                 -1.0
             };
             velocity.0 = Vec2::new(dir * KNOCKBACK_X, KNOCKBACK_Y);
-            stun.0 = STUN_TIME;
+            stun.0 = STUN_TIME * stats.stun_scale();
         }
         // Fell into a bottomless pit — nowhere to knock back to, so respawn at the
         // room's entry.
@@ -157,11 +173,12 @@ fn apply_damage(
     }
 }
 
-fn spawn_hud(mut commands: Commands, health: Res<Health>, existing: Query<(), With<HeartIcon>>) {
+fn spawn_hud(mut commands: Commands, existing: Query<(), With<HeartIcon>>) {
     if !existing.is_empty() {
         return;
     }
-    for i in 0..health.max {
+    // Spawn the full cap; `update_hud` hides the ones past the current `max`.
+    for i in 0..HEART_CAP {
         commands.spawn((
             HeartIcon(i),
             Sprite {
@@ -182,10 +199,14 @@ fn despawn_hud(mut commands: Commands, hearts: Query<Entity, With<HeartIcon>>) {
 
 /// Pin the hearts to the top-left of the viewport (scaled with the camera zoom so
 /// they keep a constant on-screen size) and colour them by current health.
+#[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
 fn update_hud(
     health: Res<Health>,
     camera: Query<(&Transform, &Projection), With<Camera2d>>,
-    mut hearts: Query<(&HeartIcon, &mut Transform, &mut Sprite), Without<Camera2d>>,
+    mut hearts: Query<
+        (&HeartIcon, &mut Transform, &mut Sprite, &mut Visibility),
+        Without<Camera2d>,
+    >,
 ) {
     let Ok((camera_tf, projection)) = camera.single() else {
         return;
@@ -196,7 +217,13 @@ fn update_hud(
     };
     let top_left = camera_tf.translation.truncate() + Vec2::new(-VIEW_HALF.x, VIEW_HALF.y) * scale;
 
-    for (icon, mut transform, mut sprite) in &mut hearts {
+    for (icon, mut transform, mut sprite, mut visibility) in &mut hearts {
+        // Icons past the current max (Vitality can raise it) stay hidden.
+        if icon.0 >= health.max {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+        *visibility = Visibility::Visible;
         let pos = top_left + Vec2::new(28.0 + icon.0 as f32 * 32.0, -28.0) * scale;
         transform.translation.x = pos.x;
         transform.translation.y = pos.y;

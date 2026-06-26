@@ -21,7 +21,8 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | Move | `A`/`D` or `←`/`→` | left stick / D-pad |
 | Jump / confirm | `Space`, `W`, `↑`, `Z`, or `Enter` | `A` (south) |
 | Attack (sword) | `J` | `X` (west) |
-| Interact (rest at bench) | `E` | `Y` (north) |
+| Interact / bench shop | `E` | `Y` (north) |
+| Character screen (view stats) | `C` | left bumper |
 | World map | `M` | `Start` |
 | Pause | `Esc` | `Select` |
 
@@ -87,11 +88,31 @@ facing, and presses chain a **3-hit combo** (the finisher flashes gold). A kille
 enemy drops an **energy orb** — walk over it to bank **energy** (counted on the
 HUD). Enemies respawn when the room reloads (re-entering it, or resting at a bench).
 
-**Benches** are checkpoints — the start room has one. Stand on a bench and press
-**`E`** (gamepad **`Y`**) — a **`[E] rest`** prompt appears — to **save** your game,
-**refill** your hearts, and **respawn the room's enemies**; the bench you last
-rested at is where death returns you. (Just walking over a bench does nothing.)
-Benches show on the world map as warm cells.
+**Benches** are checkpoints **and shops** — the start room has one. Stand on a bench
+and press **`E`** (gamepad **`Y`**) — a **`[E] bench`** prompt appears — to open the
+**bench menu**, which offers:
+
+- **Rest** — **save** your game, **refill** hearts, and **respawn the room's
+  enemies**; the bench you last rested at is where death returns you.
+- **Upgrade** — spend **energy** to raise a stat (see below).
+- **Leave** — back to play.
+
+(Just walking over a bench does nothing.) Benches show on the world map as warm cells.
+
+**Character, stats & upgrades.** The player has three Dark-Souls-flavoured stats —
+**Vitality** (more hearts), **Strength** (more sword damage), and **Poise** (shorter
+stagger when hit). Press **`C`** (gamepad **left bumper**) anywhere to open the
+read-only **character screen** and check them. **Upgrades are bought at a bench**:
+pick a stat in the bench menu and confirm to spend **energy** raising its level. Each
+level **costs more** than the last, so energy is a real currency. Stat levels and
+banked energy persist in the save.
+
+**Death and bloodstains.** Energy is only *banked* at save points (resting,
+upgrading). **Lose all your hearts and you drop every carried point of energy as a
+bloodstain** right where you fell, then respawn at the last bench. Walk back to the
+bloodstain to **reclaim** it — but **die again first and it's gone for good** (a new
+death drops a fresh one and erases the old). A pale marker shows in the room you died
+in; the character screen reminds you how much is waiting and where.
 
 Besides the edge doors, rooms can be wired together with **teleporters** — pads
 that link two distant rooms (or two spots in the same room) directly. Each pad
@@ -112,9 +133,10 @@ The structure is plugin-per-concern:
 | [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
-| [`health`](src/health.rs) | Hearts, i-frames, the heart HUD, death → last bench. |
-| [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, the 3-hit sword combo. |
-| [`save`](src/save.rs) | Three-slot save system (room + bench), RON files under `saves/`. |
+| [`health`](src/health.rs) | Hearts (sized by Vitality), i-frames, the heart HUD, death → bloodstain + last bench. |
+| [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, bloodstain recovery, the 3-hit sword combo. |
+| [`stats`](src/stats.rs) | Character stats (Vitality/Strength/Poise), the upgrade shop, and the character screen. |
+| [`save`](src/save.rs) | Three-slot save system (room + bench + progression), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
 | [`menu`](src/menu.rs) | Main menu (slot picker) + pause menu (`Esc`); `MainMenu`/`Paused` states. |
@@ -268,6 +290,22 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Moved the **shop to benches**. Interacting with a bench (`E`) now
+  opens a **bench menu** — **Rest** (save / restore / respawn), **Upgrade** a stat with
+  energy, or **Leave** — instead of resting immediately. The `C` character screen is
+  now a **read-only** stat sheet (it points you to a bench to upgrade). One overlay
+  backs both via an [`OverlayMode`](src/stats.rs). Opening the world map is now also
+  blocked while either overlay is up.
+- **2026-06-26** — Added **character stats, upgrades, and a souls-like death loop**.
+  Three Dark-Souls-flavoured stats — **Vitality** (hearts), **Strength** (sword
+  damage), **Poise** (shorter stagger) — each level from 1 up. A new **character
+  screen** (`C` / gamepad left bumper) shows them and doubles as the **shop**: spend
+  **energy** to raise a stat, with each level **costing more** than the last. Energy is
+  now banked into the save at rest/upgrade points; **dying drops all carried energy as
+  a bloodstain** where you fell — reclaim it by walking back, or lose it for good if
+  you die again first. New [`stats`](src/stats.rs) module; the [`save`](src/save.rs)
+  format gained energy, stat levels, and the pending bloodstain (older saves load with
+  base stats). The heart HUD now grows with Vitality.
 - **2026-06-26** — New **flying** enemy (`flyer.png`, a winged flapper) that ignores
   gravity, in two tinted variants: a cyan **drifter** (`Drift`) that cruises and bobs,
   bouncing off walls and floors, and a magenta **stalker** (`Hunt`) that homes straight

@@ -93,7 +93,11 @@ impl Plugin for WorldMapPlugin {
             .init_resource::<MapCursor>()
             .add_systems(
                 Update,
-                toggle_map.run_if(in_state(GameState::Playing).and_then(in_state(Paused::Running))),
+                toggle_map.run_if(
+                    in_state(GameState::Playing)
+                        .and_then(in_state(Paused::Running))
+                        .and_then(in_state(crate::stats::CharMenu::Closed)),
+                ),
             )
             .add_systems(OnEnter(MapView::Open), open_map)
             .add_systems(OnExit(MapView::Open), close_map)

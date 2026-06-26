@@ -19,7 +19,9 @@ use crate::anim::{Clip, Playback};
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
 use crate::player::{PLAYER_HALF, Player};
+use crate::save::Save;
 use crate::state::GameState;
+use crate::stats::{self, Stats};
 use crate::world::{GameAssets, MapEntity};
 
 // --- enemies -------------------------------------------------------------
@@ -378,14 +380,32 @@ fn enemy_death(
 
 const ORB_HALF: Vec2 = Vec2::new(7.0, 7.0);
 const ENERGY_PER_ORB: u32 = 1;
+/// Pickup radius (half-extents) of a dropped bloodstain.
+const BLOODSTAIN_HALF: Vec2 = Vec2::new(11.0, 11.0);
 
 /// An energy pickup dropped by a dead enemy.
 #[derive(Component)]
 struct EnergyOrb;
 
-/// How much energy the player has gathered (persists across rooms and deaths).
+/// How much energy the player has gathered (the upgrade currency). Banked into the
+/// [`Save`](crate::save::Save) at rest/upgrade points; **all of it is dropped as a
+/// [`Bloodstain`] on death** (see [`crate::stats`]).
 #[derive(Resource, Default)]
 pub struct Energy(pub u32);
+
+/// Energy dropped where the player last died, recoverable by returning to it before
+/// dying again. `amount == 0` (and an empty `room`) means none is pending.
+#[derive(Resource, Default)]
+pub(crate) struct LostEnergy {
+    pub(crate) amount: u32,
+    pub(crate) room: String,
+    pub(crate) pos: Vec2,
+}
+
+/// The visible marker for [`LostEnergy`]; touching it refunds the energy. Tagged
+/// [`MapEntity`] so it's re-spawned by the loader each time its room is entered.
+#[derive(Component)]
+pub(crate) struct Bloodstain;
 
 fn collect_energy(
     mut commands: Commands,
@@ -406,6 +426,35 @@ fn collect_energy(
     }
 }
 
+/// Walking over your dropped bloodstain refunds the lost energy and clears it
+/// (persisted so a reload can't reclaim it twice).
+fn recover_lost_energy(
+    mut commands: Commands,
+    mut energy: ResMut<Energy>,
+    mut lost: ResMut<LostEnergy>,
+    stats: Res<Stats>,
+    mut save: ResMut<Save>,
+    player: Query<&Transform, With<Player>>,
+    stains: Query<(Entity, &Transform), With<Bloodstain>>,
+) {
+    let Ok(player_tf) = player.single() else {
+        return;
+    };
+    let player_pos = player_tf.translation.truncate();
+    for (entity, transform) in &stains {
+        let delta = (transform.translation.truncate() - player_pos).abs();
+        if delta.x < BLOODSTAIN_HALF.x + PLAYER_HALF.x
+            && delta.y < BLOODSTAIN_HALF.y + PLAYER_HALF.y
+        {
+            energy.0 += lost.amount;
+            lost.amount = 0;
+            lost.room.clear();
+            commands.entity(entity).despawn();
+            stats::write_progress(&mut save, &energy, &stats, &lost);
+        }
+    }
+}
+
 // --- sword combo ---------------------------------------------------------
 
 /// Seconds between swings (you can't attack again until it elapses).
@@ -419,7 +468,6 @@ const SWING_ACTIVE: f32 = 0.12;
 /// Deliberately generous (a wide arc, à la Silksong's nail) so swings feel forgiving.
 const HIT_REACH: f32 = 24.0;
 const HIT_HALF: Vec2 = Vec2::new(28.0, 26.0);
-const SWORD_DAMAGE: i32 = 1;
 /// How long a slash sprite lingers.
 const SLASH_TIME: f32 = 0.12;
 
@@ -439,10 +487,12 @@ struct Sword {
 #[derive(Component)]
 struct Slash(f32);
 
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn player_attack(
     time: Res<Time>,
     intent: Res<PlayerIntent>,
     assets: Res<GameAssets>,
+    stats: Res<Stats>,
     mut sword: ResMut<Sword>,
     mut commands: Commands,
     player: Query<(&Transform, &Sprite), With<Player>>,
@@ -496,7 +546,9 @@ fn player_attack(
     }
 
     // While the swing is live, damage enemies in the arc — once each per swing.
+    // Damage scales with the player's Strength stat.
     if sword.active > 0.0 {
+        let damage = stats.sword_damage();
         let hit_center = player_pos + Vec2::new(sword.dir * HIT_REACH, 0.0);
         for (entity, enemy_tf, mut enemy) in &mut enemies {
             if sword.hit.contains(&entity) {
@@ -504,11 +556,11 @@ fn player_attack(
             }
             let delta = (enemy_tf.translation.truncate() - hit_center).abs();
             if delta.x < HIT_HALF.x + ENEMY_HALF.x && delta.y < HIT_HALF.y + ENEMY_HALF.y {
-                enemy.health -= SWORD_DAMAGE;
+                enemy.health -= damage;
                 sword.hit.insert(entity);
                 info!(
                     "hit enemy kind {} for {} ({} hp left)",
-                    enemy.kind, SWORD_DAMAGE, enemy.health
+                    enemy.kind, damage, enemy.health
                 );
             }
         }
@@ -583,13 +635,20 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Energy>()
+            .init_resource::<LostEnergy>()
             .init_resource::<Sword>()
             .add_systems(OnEnter(GameState::Playing), spawn_energy_hud)
             .add_systems(OnExit(GameState::Playing), despawn_energy_hud)
             .add_systems(Update, enemy_ai.in_set(GameSet::Movement))
             .add_systems(
                 Update,
-                (player_attack, enemy_death, collect_energy, fade_slashes)
+                (
+                    player_attack,
+                    enemy_death,
+                    collect_energy,
+                    recover_lost_energy,
+                    fade_slashes,
+                )
                     .chain()
                     .in_set(GameSet::Hazards),
             )

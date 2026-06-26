@@ -17,15 +17,15 @@ use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 
 use crate::GameSet;
-use crate::combat::{ENEMY_HALF, ENEMY_KINDS, Enemy};
+use crate::combat::{Bloodstain, ENEMY_HALF, ENEMY_KINDS, Enemy, LostEnergy};
 use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
 use crate::input::PlayerIntent;
 use crate::physics::{Solids, TILE};
 use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
-use crate::save::{self, Save};
 use crate::state::GameState;
+use crate::stats::{BenchAt, CharMenu, OverlayMode};
 
 /// A teleporter pad, stored as pure coordinates: stepping on the cell
 /// `(origin_col, origin_row)` sends the player to room `to` at `(dest_col,
@@ -609,6 +609,7 @@ fn handle_load_map(
     mut room_view: ResMut<RoomView>,
     mut respawn: ResMut<RespawnPoint>,
     mut armed: ResMut<TeleportArmed>,
+    lost: Res<LostEnergy>,
     existing: Query<Entity, With<MapEntity>>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
 ) {
@@ -747,6 +748,22 @@ fn handle_load_map(
         }
     }
 
+    // If the player dropped a bloodstain in this room, place its marker so they can
+    // walk back and reclaim the energy (see `crate::stats`).
+    if lost.amount > 0 && lost.room == load.map {
+        commands.spawn((
+            MapEntity,
+            Bloodstain,
+            Sprite {
+                image: assets.orb.clone(),
+                custom_size: Some(Vec2::splat(20.0)),
+                color: Color::srgb(0.7, 0.85, 1.0),
+                ..default()
+            },
+            Transform::from_xyz(lost.pos.x, lost.pos.y, 3.0),
+        ));
+    }
+
     // Resolve a destination cell (teleporter or bench; grid coords, row 0 = top) to
     // a world centre, flipping the row so y points up. Out-of-range falls to `start`.
     let teleport_pos = match load.entry {
@@ -879,18 +896,17 @@ fn detect_teleport(
 }
 
 /// Show a prompt above a bench the player is standing on, and — when they press
-/// **interact** there — rest: refill hearts, respawn the room's enemies, and record
-/// the bench as the save + respawn point (persisted to disk).
-#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
+/// **interact** there — open the **bench shop** (Rest / upgrade / Leave). The shop
+/// itself (resting, buying) lives in [`crate::stats`]; here we just detect the bench
+/// and hand it the cell to rest at.
 fn bench_interact(
     intent: Res<PlayerIntent>,
-    mut save: ResMut<Save>,
-    mut health: ResMut<Health>,
-    current: Res<CurrentRoom>,
     benches: Query<(&Transform, &Bench), Without<BenchPrompt>>,
     player: Query<&Transform, (With<Player>, Without<BenchPrompt>)>,
     mut prompt: Query<(&mut Transform, &mut Visibility), With<BenchPrompt>>,
-    mut load: MessageWriter<LoadMap>,
+    mut bench_at: ResMut<BenchAt>,
+    mut mode: ResMut<OverlayMode>,
+    mut menu: ResMut<NextState<CharMenu>>,
 ) {
     let Ok(player_tf) = player.single() else {
         return;
@@ -903,7 +919,7 @@ fn bench_interact(
         delta.x < BENCH_HALF.x + PLAYER_HALF.x && delta.y < BENCH_HALF.y + PLAYER_HALF.y
     });
 
-    // Show the "rest" prompt above that bench, or hide it.
+    // Show the prompt above that bench, or hide it.
     if let Ok((mut prompt_tf, mut visibility)) = prompt.single_mut() {
         match on_bench {
             Some((tf, _)) => {
@@ -915,22 +931,13 @@ fn bench_interact(
         }
     }
 
-    // Rest only on the interact press, while standing on a bench.
+    // On the interact press, open the bench shop for this bench.
     if intent.interact
         && let Some((_, bench)) = on_bench
     {
-        health.current = health.max;
-        save.room = current.name.clone();
-        save.bench_room = current.name.clone();
-        save.bench_col = bench.col;
-        save.bench_row = bench.row;
-        save::write_save(&save);
-        // Reload the room so enemies (and other hazards) respawn fresh, placing the
-        // player back on this bench.
-        load.write(LoadMap {
-            map: current.name.clone(),
-            entry: Entry::Bench(bench.col, bench.row),
-        });
+        bench_at.0 = Some((bench.col, bench.row));
+        *mode = OverlayMode::Bench;
+        menu.set(CharMenu::Open);
     }
 }
 
@@ -941,7 +948,7 @@ fn spawn_bench_prompt(mut commands: Commands, existing: Query<(), With<BenchProm
     }
     commands.spawn((
         BenchPrompt,
-        Text2d::new("[E] rest"),
+        Text2d::new("[E] bench"),
         TextFont {
             font_size: FontSize::Px(16.0),
             ..default()

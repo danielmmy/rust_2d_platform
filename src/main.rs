@@ -20,6 +20,7 @@ mod player;
 mod ron;
 mod save;
 mod state;
+mod stats;
 mod world;
 mod worldmap;
 
@@ -29,6 +30,7 @@ use bevy::window::WindowResolution;
 use menu::Paused;
 use save::Save;
 use state::GameState;
+use stats::CharMenu;
 use worldmap::MapView;
 
 /// Per-frame ordering of the gameplay systems.
@@ -69,11 +71,12 @@ fn main() {
             GameSet::Camera,
         )
             .chain()
-            // Frozen while the world map or the pause menu is open.
+            // Frozen while the world map, the pause menu, or the character screen is open.
             .run_if(
                 in_state(GameState::Playing)
                     .and_then(in_state(MapView::Closed))
-                    .and_then(in_state(Paused::Running)),
+                    .and_then(in_state(Paused::Running))
+                    .and_then(in_state(CharMenu::Closed)),
             ),
     )
     .add_plugins((
@@ -83,6 +86,7 @@ fn main() {
         hazards::HazardPlugin,
         health::HealthPlugin,
         combat::CombatPlugin,
+        stats::StatsPlugin,
         anim::AnimationPlugin,
         camera::CameraPlugin,
         worldmap::WorldMapPlugin,
