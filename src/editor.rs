@@ -1299,7 +1299,7 @@ fn sprite_for(ch: char, assets: &GameAssets, rock: &RockSprite) -> Option<Handle
         '^' => Some(assets.spikes.clone()),
         'R' => Some(rock.0.clone()),
         c if c == START_MARKER => Some(assets.player.clone()),
-        c if c == ENEMY_GLYPH => Some(assets.enemy.clone()),
+        c if c == ENEMY_GLYPH => assets.enemy_sheets.first().cloned(),
         _ => None,
     }
 }

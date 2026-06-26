@@ -75,12 +75,13 @@ open. Touching one (or an enemy) costs a **heart** (with brief invulnerability) 
 back to the room's entrance. Lose all three hearts and you respawn at the last
 bench.
 
-**Enemies** patrol the ground (turning at walls and ledges) and hurt you on
-contact. They're all one **`E`** glyph; a room's optional `enemies` array assigns
-each cell a **type** by coordinate (a colour + hit points — see
-[`ENEMY_KINDS`](src/combat.rs)), and an `E` with no entry uses the first type. So
-there's no glyph budget — add as many enemy types as you like. The demo uses a
-basic purple one (three hits) and a red one (two hits). Swing your **sword** with
+**Enemies** hurt you on contact. They're all one **`E`** glyph; a room's optional
+`enemies` array assigns each cell a **type** by coordinate. Each type
+([`ENEMY_KINDS`](src/combat.rs)) is **pure data** — hit points, colour, speed,
+**AI**, and its **sprite sheet + animation** — so a new type needs no glyph and (if
+it reuses a sheet) no new art. The demo has a purple **patroller** (three hits,
+walks and turns at walls/ledges) and a faster **red** one (two hits) that
+**chases** you when you come within its aggro range. Swing your **sword** with
 **`J`** (gamepad `X`): a generous hitbox (a wide arc) in front of the way you're
 facing, and presses chain a **3-hit combo** (the finisher flashes gold). A killed
 enemy drops an **energy orb** — walk over it to bank **energy** (counted on the
@@ -107,12 +108,12 @@ The structure is plugin-per-concern:
 | [`input`](src/input.rs) | Keyboard + gamepad → one `PlayerIntent`. |
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
 | [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`. |
-| [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player (idle/jump/damage) + portal (idle/active) clips. |
+| [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player / portal / bench / enemy clips. |
 | [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
 | [`health`](src/health.rs) | Hearts, i-frames, the heart HUD, death → last bench. |
-| [`combat`](src/combat.rs) | Patrolling enemies, energy drops/pickup, the 3-hit sword combo. |
+| [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, the 3-hit sword combo. |
 | [`save`](src/save.rs) | Three-slot save system (room + bench), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
@@ -265,6 +266,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Enemy **kinds** now fully encapsulate behaviour and looks: each
+  carries its **AI** (patrol, or **chase** within an aggro range — the red one
+  hunts you) and its **sprite sheet + animation** (gridded and played via `anim`),
+  alongside stats and colour. Adding a type is one data entry, no new code or glyph.
 - **2026-06-26** — Enemy types are now **data-driven**: one `E` glyph plus an
   `enemies: [(kind, col, row)]` array (kind indexes `combat::ENEMY_KINDS`), so any
   number of types fit without per-type glyphs. An `E` with no entry uses kind 0. The

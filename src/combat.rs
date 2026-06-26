@@ -13,6 +13,7 @@
 use bevy::prelude::*;
 
 use crate::GameSet;
+use crate::anim::{Clip, Playback};
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
 use crate::player::{PLAYER_HALF, Player};
@@ -23,81 +24,144 @@ use crate::world::{GameAssets, MapEntity};
 
 /// Half-extents of an enemy (collision + contact).
 pub(crate) const ENEMY_HALF: Vec2 = Vec2::new(10.0, 13.0);
-const ENEMY_SPEED: f32 = 56.0;
-
-/// A kind of enemy: its hit points and body colour (the one neutral sprite is
-/// tinted to this colour, so a new type needs no new art).
-pub(crate) struct EnemyKind {
-    pub(crate) health: i32,
-    pub(crate) color: Color,
-}
-
-/// The enemy types, indexed by the `kind` in a map's `enemies` array. Index 0 is
-/// the default when an `E` glyph has no matching entry. Extend this for more types.
-pub(crate) const ENEMY_KINDS: [EnemyKind; 2] = [
-    EnemyKind {
-        health: 3,
-        color: Color::srgb(0.70, 0.30, 0.64), // basic (purple)
-    },
-    EnemyKind {
-        health: 2,
-        color: Color::srgb(0.86, 0.27, 0.27), // red
-    },
-];
 const ENEMY_GRAVITY: f32 = 1400.0;
 const ENEMY_MAX_FALL: f32 = 800.0;
 
-/// A ground-patrolling enemy: walks `dir`, falling under gravity, and turns at
-/// walls and ledge edges.
+/// How an enemy decides where to move.
+#[derive(Clone, Copy)]
+pub(crate) enum EnemyAi {
+    /// Walk back and forth, turning at walls and ledge edges.
+    Patrol,
+    /// Chase the player while within `aggro` pixels; patrol otherwise.
+    Chase { aggro: f32 },
+}
+
+/// A fully data-driven enemy type: stats, behaviour ([`ai`](EnemyKind::ai)), and
+/// look — the `sheet` (an `assets/sprites/` file) gridded `cols`×`rows` and played
+/// with `clip`, tinted to `color`. Add a kind by appending one entry; it needs no
+/// extra glyph (the map's `enemies` array references kinds by index) and no code.
+pub(crate) struct EnemyKind {
+    pub(crate) health: i32,
+    pub(crate) color: Color,
+    pub(crate) speed: f32,
+    pub(crate) ai: EnemyAi,
+    pub(crate) sheet: &'static str,
+    pub(crate) cols: u32,
+    pub(crate) rows: u32,
+    pub(crate) clip: Clip,
+}
+
+/// The enemy types, indexed by the `kind` in a map's `enemies` array. Index 0 is
+/// the default when an `E` glyph has no matching entry.
+pub(crate) const ENEMY_KINDS: [EnemyKind; 2] = [
+    // Basic: ambling purple patroller.
+    EnemyKind {
+        health: 3,
+        color: Color::srgb(0.70, 0.30, 0.64),
+        speed: 56.0,
+        ai: EnemyAi::Patrol,
+        sheet: "enemy.png",
+        cols: 2,
+        rows: 1,
+        clip: Clip {
+            first: 0,
+            count: 2,
+            fps: 6.0,
+            playback: Playback::Loop,
+        },
+    },
+    // Red: faster, and chases the player when close.
+    EnemyKind {
+        health: 2,
+        color: Color::srgb(0.86, 0.27, 0.27),
+        speed: 84.0,
+        ai: EnemyAi::Chase { aggro: 150.0 },
+        sheet: "enemy.png",
+        cols: 2,
+        rows: 1,
+        clip: Clip {
+            first: 0,
+            count: 2,
+            fps: 10.0,
+            playback: Playback::Loop,
+        },
+    },
+];
+
+/// A spawned enemy: its [`kind`](Enemy::kind) (indexing [`ENEMY_KINDS`]), remaining
+/// health, facing/move direction, and vertical velocity.
 #[derive(Component)]
 pub(crate) struct Enemy {
+    pub(crate) kind: usize,
     health: i32,
     dir: f32,
     vy: f32,
 }
 
 impl Enemy {
-    /// A fresh enemy walking right, with `health` hit points.
-    pub(crate) fn new(health: i32) -> Self {
+    /// A fresh enemy of `kind`, walking right.
+    pub(crate) fn new(kind: usize) -> Self {
+        let kind = kind.min(ENEMY_KINDS.len() - 1);
         Self {
-            health,
+            kind,
+            health: ENEMY_KINDS[kind].health,
             dir: 1.0,
             vy: 0.0,
         }
     }
 }
 
-fn patrol_enemies(
+/// Move each enemy per its kind's AI (patrol or chase), with gravity and
+/// wall/ledge handling.
+fn enemy_ai(
     time: Res<Time>,
     solids: Res<Solids>,
+    players: Query<&Transform, (With<Player>, Without<Enemy>)>,
     mut enemies: Query<(&mut Transform, &mut Enemy, &mut Sprite)>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
+    let player_pos = players.single().ok().map(|t| t.translation.truncate());
+
     for (mut transform, mut enemy, mut sprite) in &mut enemies {
-        enemy.vy = (enemy.vy - ENEMY_GRAVITY * dt).max(-ENEMY_MAX_FALL);
+        let kind = &ENEMY_KINDS[enemy.kind];
         let mut center = transform.translation.truncate();
 
-        if physics::collide_x(
-            &solids,
-            &mut center,
-            ENEMY_HALF,
-            enemy.dir * ENEMY_SPEED * dt,
-        ) {
-            enemy.dir = -enemy.dir; // hit a wall → turn around
-        }
-        let (blocked, landed) = physics::collide_y(&solids, &mut center, ENEMY_HALF, enemy.vy * dt);
+        // Chase: face the player while within aggro range; otherwise patrol.
+        let chasing = match kind.ai {
+            EnemyAi::Chase { aggro } => match player_pos {
+                Some(pp) if center.distance(pp) < aggro => {
+                    enemy.dir = if pp.x >= center.x { 1.0 } else { -1.0 };
+                    true
+                }
+                _ => false,
+            },
+            EnemyAi::Patrol => false,
+        };
+
+        // A wall or ledge directly ahead in the current facing.
+        let grounded = solids.solid_at(center.x, center.y - ENEMY_HALF.y - 2.0);
+        let ahead = center.x + enemy.dir * (ENEMY_HALF.x + 2.0);
+        let blocked = solids.solid_at(ahead, center.y)
+            || (grounded && !solids.solid_at(ahead, center.y - ENEMY_HALF.y - 2.0));
+
+        let mut step = enemy.dir * kind.speed * dt;
         if blocked {
-            enemy.vy = 0.0;
-        }
-        // Turn at a ledge: no ground just ahead of the leading foot.
-        if landed {
-            let ahead = center.x + enemy.dir * (ENEMY_HALF.x + 2.0);
-            if !solids.solid_at(ahead, center.y - ENEMY_HALF.y - 2.0) {
-                enemy.dir = -enemy.dir;
+            if chasing {
+                step = 0.0; // a chaser waits at the edge rather than turning or falling
+            } else {
+                enemy.dir = -enemy.dir; // a patroller turns around
+                step = enemy.dir * kind.speed * dt;
             }
+        }
+
+        physics::collide_x(&solids, &mut center, ENEMY_HALF, step);
+        enemy.vy = (enemy.vy - ENEMY_GRAVITY * dt).max(-ENEMY_MAX_FALL);
+        let (vblocked, _) = physics::collide_y(&solids, &mut center, ENEMY_HALF, enemy.vy * dt);
+        if vblocked {
+            enemy.vy = 0.0;
         }
 
         transform.translation.x = center.x;
@@ -321,7 +385,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<Sword>()
             .add_systems(OnEnter(GameState::Playing), spawn_energy_hud)
             .add_systems(OnExit(GameState::Playing), despawn_energy_hud)
-            .add_systems(Update, patrol_enemies.in_set(GameSet::Movement))
+            .add_systems(Update, enemy_ai.in_set(GameSet::Movement))
             .add_systems(
                 Update,
                 (player_attack, enemy_death, collect_energy, fade_slashes)

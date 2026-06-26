@@ -355,7 +355,8 @@ pub(crate) struct GameAssets {
     pub(crate) spikes: Handle<Image>,
     pub(crate) portal: Handle<Image>,
     pub(crate) bench: Handle<Image>,
-    pub(crate) enemy: Handle<Image>,
+    /// One sprite sheet per [`ENEMY_KINDS`] entry (by index).
+    pub(crate) enemy_sheets: Vec<Handle<Image>>,
     pub(crate) orb: Handle<Image>,
     pub(crate) slash: Handle<Image>,
 }
@@ -481,7 +482,10 @@ fn load_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
         spikes: asset_server.load("sprites/spikes.png"),
         portal: asset_server.load("sprites/portal.png"),
         bench: asset_server.load("sprites/bench.png"),
-        enemy: asset_server.load("sprites/enemy.png"),
+        enemy_sheets: ENEMY_KINDS
+            .iter()
+            .map(|k| asset_server.load(format!("sprites/{}", k.sheet)))
+            .collect(),
         orb: asset_server.load("sprites/orb.png"),
         slash: asset_server.load("sprites/slash.png"),
     });
@@ -503,7 +507,10 @@ fn wait_for_load(
         && asset_server.is_loaded_with_dependencies(assets.spikes.id())
         && asset_server.is_loaded_with_dependencies(assets.portal.id())
         && asset_server.is_loaded_with_dependencies(assets.bench.id())
-        && asset_server.is_loaded_with_dependencies(assets.enemy.id())
+        && assets
+            .enemy_sheets
+            .iter()
+            .all(|h| asset_server.is_loaded_with_dependencies(h.id()))
         && asset_server.is_loaded_with_dependencies(assets.orb.id())
         && asset_server.is_loaded_with_dependencies(assets.slash.id())
         && asset_server.is_loaded_with_dependencies(rock.0.id());
@@ -653,14 +660,15 @@ fn handle_load_map(
                     .find(|e| e.col == col && e.row == r as i32)
                     .map_or(0, |e| e.kind)
                     .min(ENEMY_KINDS.len() - 1);
-                let spec = &ENEMY_KINDS[kind];
+                // Spawn with the kind's sheet + tint; `anim` attaches the atlas +
+                // animation, and `combat` drives the AI.
                 commands.spawn((
                     MapEntity,
-                    Enemy::new(spec.health),
+                    Enemy::new(kind),
                     Hazard { half: ENEMY_HALF },
                     Sprite {
-                        image: assets.enemy.clone(),
-                        color: spec.color,
+                        image: assets.enemy_sheets[kind].clone(),
+                        color: ENEMY_KINDS[kind].color,
                         custom_size: Some(Vec2::splat(TILE)),
                         ..default()
                     },

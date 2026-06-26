@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
+use crate::combat::{ENEMY_KINDS, Enemy};
 use crate::health::Invuln;
 use crate::player::{JumpState, MovementConfig, Player, Velocity};
 use crate::state::GameState;
@@ -128,6 +129,7 @@ impl Plugin for AnimationPlugin {
                 attach_player,
                 attach_portals,
                 attach_benches,
+                attach_enemies,
                 control_player,
                 control_portals,
                 advance_animations,
@@ -351,5 +353,38 @@ fn attach_benches(
         commands
             .entity(entity)
             .insert(SpriteAnimation::new(BENCH_IDLE));
+    }
+}
+
+// --- enemies -------------------------------------------------------------
+
+/// Give each enemy the atlas + animation its [`kind`](Enemy::kind) declares (its
+/// sheet's grid and clip), once the sheet is loaded. The kind's sprite sheet is
+/// already on the enemy's `Sprite` (set by `world`); we only grid it and animate.
+#[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
+fn attach_enemies(
+    mut commands: Commands,
+    images: Res<Assets<Image>>,
+    mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+    mut cache: ResMut<AtlasCache>,
+    mut enemies: Query<(Entity, &Enemy, &mut Sprite), Without<SpriteAnimation>>,
+) {
+    for (entity, enemy, mut sprite) in &mut enemies {
+        let kind = &ENEMY_KINDS[enemy.kind];
+        let image = sprite.image.clone();
+        let Some(layout) = atlas_for(
+            &mut cache,
+            &mut layouts,
+            &images,
+            &image,
+            kind.cols,
+            kind.rows,
+        ) else {
+            continue; // sheet not loaded yet — retry next frame
+        };
+        sprite.texture_atlas = Some(TextureAtlas { layout, index: 0 });
+        commands
+            .entity(entity)
+            .insert(SpriteAnimation::new(kind.clip));
     }
 }
