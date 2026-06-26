@@ -91,6 +91,7 @@ The structure is plugin-per-concern:
 | [`input`](src/input.rs) | Keyboard + gamepad → one `PlayerIntent`. |
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
 | [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`. |
+| [`anim`](src/anim.rs) | Player sprite-sheet animation: imports an N×M grid, plays idle/jump/damage clips. |
 | [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
@@ -210,6 +211,13 @@ Drop your own PNGs over the placeholders in `assets/sprites/`
 (`player.png`, `tile.png`, `spikes.png`, `rock.png`). Sizes are set in code via
 `custom_size`, so any resolution works — the world keeps the same scale.
 
+**`player.png` is a sprite sheet** — an N×M grid of equal frames ([`anim`](src/anim.rs)
+imports it, sizing each frame from the image ÷ grid). The placeholder is **4×3**:
+row 0 = idle (the last frame blinks), row 1 = jump, row 2 = damage. Redraw it with
+the same grid and it just works; for a different grid, change `PLAYER_COLS` /
+`PLAYER_ROWS` (and the `Clip` frame ranges) in [`anim`](src/anim.rs). The animation
+is driven by player state — grounded → idle, airborne → jump, i-frames → damage.
+
 ## Status
 
 Compiles against Bevy 0.19 (debug and release); the collision logic, the room
@@ -220,6 +228,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-25** — The player is now a **sprite sheet** (`player.png`, a 4×3 grid)
+  with a small animation system ([`anim`](src/anim.rs)): it imports an N×M grid into
+  a texture atlas and plays **idle** (with a blink), **jump**, and **damage** clips
+  by player state. Swap in a finer sheet later by redrawing it (or adjusting the
+  grid/clip constants).
 - **2026-06-25** — Benches now require an **interact press** (`E` / gamepad `Y`)
   to rest, instead of triggering when you walk over them; a `[E] rest` prompt shows
   while you're standing on one.

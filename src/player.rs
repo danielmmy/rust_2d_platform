@@ -32,6 +32,13 @@ pub struct JumpState {
     grounded: bool,
 }
 
+impl JumpState {
+    /// Whether the player is standing on the ground (read by animation).
+    pub fn grounded(&self) -> bool {
+        self.grounded
+    }
+}
+
 /// Every knob that shapes how movement feels. Tweak and re-run to taste.
 #[derive(Resource)]
 pub struct MovementConfig {

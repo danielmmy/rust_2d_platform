@@ -6,6 +6,7 @@
 //! variable height, asymmetric gravity). Built as small Bevy plugins so it's easy
 //! to extend, with art and levels under `assets/` that are simple to replace.
 
+mod anim;
 mod camera;
 #[cfg(debug_assertions)]
 mod editor;
@@ -80,6 +81,7 @@ fn main() {
         player::PlayerPlugin,
         hazards::HazardPlugin,
         health::HealthPlugin,
+        anim::AnimationPlugin,
         camera::CameraPlugin,
         worldmap::WorldMapPlugin,
         menu::MenuPlugin,
