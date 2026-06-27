@@ -886,6 +886,102 @@ fn spawn_enemy(commands: &mut Commands, assets: &GameAssets, kind: usize, pos: V
     ));
 }
 
+/// Spawn the entity for one grid glyph at `center`, returning `(entity, is_solid)` when
+/// it's a standalone, **movable** cell (a solid, spike, bench, or rock spawner) so a
+/// [`Mover`] can pick it up. Returns `None` for the start marker (which only sets
+/// `start_pos`), enemies, fog, and empty cells — things a mover doesn't carry.
+#[allow(clippy::too_many_arguments)] // distinct, glyph-specific spawn data
+fn spawn_cell(
+    commands: &mut Commands,
+    assets: &GameAssets,
+    map: &MapData,
+    ch: char,
+    col: i32,
+    r: i32,
+    center: Vec2,
+    arena_armed: bool,
+    start_pos: &mut Vec2,
+) -> Option<(Entity, bool)> {
+    if ch == START_MARKER {
+        *start_pos = center;
+        None
+    } else if ch == ENEMY_GLYPH {
+        // The type comes from the room's `enemies` array (by cell); an `E` with no entry
+        // — or an out-of-range kind — uses the first type.
+        let kind = map
+            .enemies
+            .iter()
+            .find(|e| e.col == col && e.row == r)
+            .map_or(0, |e| e.kind);
+        spawn_enemy(commands, assets, kind, center);
+        None
+    } else if ch == BENCH_GLYPH {
+        let e = commands
+            .spawn((
+                MapEntity,
+                Bench { col, row: r },
+                Sprite {
+                    image: assets.bench.clone(),
+                    custom_size: Some(Vec2::splat(TILE)),
+                    ..default()
+                },
+                Transform::from_xyz(center.x, center.y, 1.0),
+            ))
+            .id();
+        Some((e, false))
+    } else if ch == FOG_GLYPH {
+        // The mist is purely visual (you walk through it); the seal is the locked exits
+        // below. Only show it while the arena is live.
+        if arena_armed {
+            crate::boss::spawn_fog_cell(commands, center);
+        }
+        None
+    } else if map.solid.contains(ch) {
+        let e = commands
+            .spawn((
+                MapEntity,
+                Sprite {
+                    image: assets.tile.clone(),
+                    custom_size: Some(Vec2::splat(TILE)),
+                    ..default()
+                },
+                Transform::from_xyz(center.x, center.y, 0.0),
+            ))
+            .id();
+        Some((e, true))
+    } else if map.spikes.contains(ch) {
+        let e = commands
+            .spawn((
+                MapEntity,
+                Hazard { half: SPIKE_HALF },
+                Sprite {
+                    image: assets.spikes.clone(),
+                    custom_size: Some(Vec2::splat(TILE)),
+                    ..default()
+                },
+                Transform::from_xyz(center.x, center.y, 1.0),
+            ))
+            .id();
+        Some((e, false))
+    } else if map.rocks.contains(ch) {
+        // Stagger spawners so they don't all drop in sync.
+        let mut timer = Timer::from_seconds(2.2, TimerMode::Repeating);
+        timer.set_elapsed(std::time::Duration::from_secs_f32(
+            (col as f32 * 0.41) % 2.2,
+        ));
+        let e = commands
+            .spawn((
+                MapEntity,
+                RockSpawner { timer },
+                Transform::from_xyz(center.x, center.y, 1.0),
+            ))
+            .id();
+        Some((e, false))
+    } else {
+        None
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn handle_load_map(
     mut commands: Commands,
@@ -937,89 +1033,66 @@ fn handle_load_map(
     let is_cleared = cleared_bosses.0.contains(&load.map) || cleared_arenas.0.contains(&load.map);
     let arena_armed = !map.fog_wall.is_empty() && !is_cleared;
 
-    // Cells owned by a moving platform (authored rows, 0 = top): skipped in the static
-    // pass so they're neither solid nor a static sprite — the mover provides both.
-    let mover_cells: Vec<(i32, i32)> = map
+    // Movers pick up whatever entity is authored at their cells (a solid, spike, bench,
+    // …): map each cell to its mover, with a slot to collect the spawned parts.
+    let to_world = |col: i32, row: i32| {
+        Vec2::new(
+            col as f32 * TILE + TILE / 2.0,
+            (height - 1 - row) as f32 * TILE + TILE / 2.0,
+        )
+    };
+    let mover_homes: Vec<Vec2> = map
         .movers
         .iter()
-        .flat_map(|m| m.tiles.iter().copied())
+        .map(|m| to_world(m.tiles[0].0, m.tiles[0].1))
         .collect();
+    let mut mover_at: HashMap<(i32, i32), usize> = HashMap::new();
+    for (mi, m) in map.movers.iter().enumerate() {
+        for &cell in &m.tiles {
+            mover_at.insert(cell, mi);
+        }
+    }
+    let mut mover_parts: Vec<Vec<(Entity, Vec2, bool)>> = vec![Vec::new(); map.movers.len()];
 
     for (r, line) in map.tiles.iter().enumerate() {
         let row = height - 1 - r as i32; // flip so row 0 is the top, y points up
         for (c, ch) in line.chars().enumerate() {
             let col = c as i32;
-            if mover_cells.contains(&(col, r as i32)) {
-                continue;
-            }
             let center = Vec2::new(
                 col as f32 * TILE + TILE / 2.0,
                 row as f32 * TILE + TILE / 2.0,
             );
-
-            if ch == START_MARKER {
-                start_pos = center;
-            } else if ch == ENEMY_GLYPH {
-                // The type comes from the room's `enemies` array (by cell); an `E`
-                // with no entry — or an out-of-range kind — uses the first type.
-                let kind = map
-                    .enemies
-                    .iter()
-                    .find(|e| e.col == col && e.row == r as i32)
-                    .map_or(0, |e| e.kind);
-                spawn_enemy(&mut commands, &assets, kind, center);
-            } else if ch == BENCH_GLYPH {
-                commands.spawn((
-                    MapEntity,
-                    Bench { col, row: r as i32 },
-                    Sprite {
-                        image: assets.bench.clone(),
-                        custom_size: Some(Vec2::splat(TILE)),
-                        ..default()
-                    },
-                    Transform::from_xyz(center.x, center.y, 1.0),
-                ));
-            } else if ch == FOG_GLYPH {
-                // The mist is purely visual (you walk through it); the seal is the
-                // locked exits below. Only show it while the arena is live.
-                if arena_armed {
-                    crate::boss::spawn_fog_cell(&mut commands, center);
-                }
-            } else if map.solid.contains(ch) {
+            let Some((entity, solid)) = spawn_cell(
+                &mut commands,
+                &assets,
+                map,
+                ch,
+                col,
+                r as i32,
+                center,
+                arena_armed,
+                &mut start_pos,
+            ) else {
+                continue;
+            };
+            if let Some(&mi) = mover_at.get(&(col, r as i32)) {
+                // A mover cell: hand the entity to its platform, off the static grid.
+                mover_parts[mi].push((entity, center - mover_homes[mi], solid));
+            } else if solid {
                 solids.0.insert((col, row));
-                commands.spawn((
-                    MapEntity,
-                    Sprite {
-                        image: assets.tile.clone(),
-                        custom_size: Some(Vec2::splat(TILE)),
-                        ..default()
-                    },
-                    Transform::from_xyz(center.x, center.y, 0.0),
-                ));
-            } else if map.spikes.contains(ch) {
-                commands.spawn((
-                    MapEntity,
-                    Hazard { half: SPIKE_HALF },
-                    Sprite {
-                        image: assets.spikes.clone(),
-                        custom_size: Some(Vec2::splat(TILE)),
-                        ..default()
-                    },
-                    Transform::from_xyz(center.x, center.y, 1.0),
-                ));
-            } else if map.rocks.contains(ch) {
-                // Stagger spawners so they don't all drop in sync.
-                let mut timer = Timer::from_seconds(2.2, TimerMode::Repeating);
-                timer.set_elapsed(std::time::Duration::from_secs_f32(
-                    (col as f32 * 0.41) % 2.2,
-                ));
-                commands.spawn((
-                    MapEntity,
-                    RockSpawner { timer },
-                    Transform::from_xyz(center.x, center.y, 1.0),
-                ));
             }
         }
+    }
+
+    // Hand each mover the parts it picked up.
+    for (mi, m) in map.movers.iter().enumerate() {
+        crate::movers::spawn_mover(
+            &mut commands,
+            m,
+            height,
+            mover_homes[mi],
+            std::mem::take(&mut mover_parts[mi]),
+        );
     }
 
     // Teleporter pads are pure data (no grid glyph) — spawn one per portal at its
@@ -1045,11 +1118,6 @@ fn handle_load_map(
                 ),
             ));
         }
-    }
-
-    // Moving platforms (dynamic colliders; their cells were skipped above).
-    for mover in &map.movers {
-        crate::movers::spawn_mover(&mut commands, &assets, mover, height);
     }
 
     // If the player dropped a bloodstain in this room, place its marker so they can

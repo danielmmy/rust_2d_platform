@@ -163,7 +163,7 @@ The structure is plugin-per-concern:
 | [`input`](src/input.rs) | Keyboard + gamepad → one `PlayerIntent`. |
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
 | [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`; rides moving platforms. |
-| [`movers`](src/movers.rs) | Ridable moving platforms — paths, modes (loop/pingpong/once), and the rider carry. |
+| [`movers`](src/movers.rs) | Generic moving things — carries whatever the grid authors at a mover's cells along a path (loop/pingpong/once); solid ones are ridable. |
 | [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player / portal / bench / enemy / boss clips. |
 | [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches; loads each save's world from its [`LevelRoot`]. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
@@ -207,9 +207,9 @@ walk off the edge and you cross through one (empty list = a wall / bottomless ed
     enemies: [                   // types for `E` cells (optional; default = kind 0)
         (kind: 1, col: 3, row: 1),   // the `E` at (3, 1) is enemy type 1
     ],
-    movers: [                    // moving platforms (optional)
-        // a 3-tile platform; its anchor (tiles[0]) loops through the path at 70 px/s,
-        // pausing 700 ms at each stop, carrying anything riding on top.
+    movers: [                    // movers (optional) — carry whatever is at the cells
+        // the 3 tiles authored at (22,18)..(24,18) loop through the path at 70 px/s,
+        // pausing 700 ms per stop; solid tiles are ridable and carry you.
         (tiles: [(22,18),(23,18),(24,18)], path: [(22,9),(30,9),(30,18)],
          mode: "loop", speed: 70, rest: 700),
     ],
@@ -239,16 +239,21 @@ For a two-way link, give each end a pad pointing at the other's cell. A pad won'
 fire again until you've stepped ~1.5 tiles clear of it, so you land safely on the
 destination pad and don't bounce back and forth.
 
-**Moving platforms** (`movers`) are **ridable** and pure coordinate data — no glyph. Each
-is a rigid group of `tiles` (cells, `row` from the top) whose **anchor** (`tiles[0]`)
-travels a `path`; every other tile keeps its offset and is dragged along, so each stop is
-written once. It starts at its `tiles` home, glides to each `path` cell at `speed` **px/s**
-(uniform motion), pauses `rest` **ms** at each, then continues by `mode`: **`loop`** (cycle
-home→stops→home forever), **`pingpong`** (bounce back and forth), or **`once`** (stop at the
-last cell). Tiles you stand on **carry you** — including up/down lifts. The starter rooms
-show one of each mode: `r0_0` a `loop` patrol, `r1_0` a `pingpong` slider, `r2_0` a `once`
-lift. (Collision is a static cell grid, so movers are dynamic AABBs resolved after it —
-see [`movers`](src/movers.rs) + [`physics`](src/physics.rs).)
+**Movers** are a generic "move what's already there" system: a mover **doesn't draw
+anything** — it picks up whatever the grid authors at its `tiles` cells (a solid block, a
+spike, a bench, …) and carries those entities along a path. So the same data makes a
+ridable platform, a sweeping spike, a roving bench, etc. — just put the glyph you want at
+the cells. A mover is a rigid group whose **anchor** (`tiles[0]`) travels the `path`; every
+other tile keeps its offset and is dragged along, so each stop is written once. It starts
+at its `tiles` home, glides to each `path` cell at `speed` **px/s** (uniform motion),
+pauses `rest` **ms** at each, then continues by `mode`: **`loop`** (cycle home→stops→home
+forever), **`pingpong`** (bounce back and forth), or **`once`** (stop at the last cell).
+**Solid** cells become ridable — stand on one and it **carries you** (including up/down
+lifts); non-solid cells keep their own behaviour (a moving spike still hurts). The starter
+rooms show one of each mode over a 3-tile block: `r0_0` a `loop` patrol, `r1_0` a
+`pingpong` slider, `r2_0` a `once` lift. (Collision is a static cell grid, so a mover's
+solid tiles are lifted out of it and resolved as dynamic AABBs — see
+[`movers`](src/movers.rs) + [`physics`](src/physics.rs).)
 
 **Enemies** use one `E` glyph in the grid; the optional `enemies` array gives a
 `kind` (a [`combat::ENEMY_KINDS`](src/combat.rs) index) to the `E` at `(col, row)`.
@@ -373,13 +378,15 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
-- **2026-06-27** — Added **ridable moving platforms** ([`movers`](src/movers.rs)). A map's
-  `movers` list defines rigid tile groups — `(tiles, path, mode, speed, rest)` — whose
-  anchor travels a path at `speed` px/s, pausing `rest` ms per stop, cycling by
-  **`loop` / `pingpong` / `once`**. They're spawned as dynamic AABBs (lifted out of the
-  static grid) that the player resolves against *and is carried by* when standing on top
-  (new [`Platforms`](src/physics.rs) pass in player movement). The RON reader, `to_ron`,
-  and the editor preserve them. Starter rooms `r0_0`/`r1_0`/`r2_0` demo the three modes.
+- **2026-06-27** — Added **movers** ([`movers`](src/movers.rs)), a generic "move what's
+  already there" system. A map's `movers` list — `(tiles, path, mode, speed, rest)` —
+  **adopts whatever entity the grid authors at its cells** (a solid, spike, bench, …) and
+  carries it along a path at `speed` px/s, pausing `rest` ms per stop, cycling by
+  **`loop` / `pingpong` / `once`**. **Solid** cells are lifted out of the static grid into
+  dynamic AABBs the player resolves against *and is carried by* when standing on top (new
+  [`Platforms`](src/physics.rs) pass in player movement); non-solid cells keep their own
+  behaviour (a moving spike still hurts). The RON reader, `to_ron`, and the editor preserve
+  them. Starter rooms `r0_0`/`r1_0`/`r2_0` demo the three modes over a 3-tile block.
 - **2026-06-26** — Boss polish: lifted the sprite so its feet rest on the ground instead
   of clipping into it (an [`Anchor`](src/boss.rs) offset for the hitbox/art height gap),
   and **capped Summon at two live minions** (`MAX_SUMMONS`) so the arena can't be flooded.
