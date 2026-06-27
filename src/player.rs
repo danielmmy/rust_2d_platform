@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use crate::GameSet;
 use crate::health::Stun;
 use crate::input::PlayerIntent;
-use crate::physics::{self, Solids};
+use crate::physics::{self, Platforms, Solids};
 use crate::save::Save;
 use crate::state::GameState;
 
@@ -112,11 +112,13 @@ fn approach(current: f32, target: f32, max_delta: f32) -> f32 {
     }
 }
 
-fn movement(
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct resource/query
+pub(crate) fn movement(
     time: Res<Time>,
     intent: Res<PlayerIntent>,
     cfg: Res<MovementConfig>,
     solids: Res<Solids>,
+    platforms: Res<Platforms>,
     stun: Res<Stun>,
     abilities: Res<Abilities>,
     mut query: Query<(&mut Transform, &mut Velocity, &mut JumpState, &mut Sprite), With<Player>>,
@@ -197,17 +199,27 @@ fn movement(
         };
         velocity.0.y = (velocity.0.y - gravity * dt).max(-cfg.max_fall);
 
-        // --- integrate + collide (X then Y) ---
+        // --- integrate + collide (X then Y), against the static grid then any moving
+        // platforms. A platform the player is standing on first carries them along. ---
         let mut center = transform.translation.truncate();
-        if physics::collide_x(&solids, &mut center, PLAYER_HALF, velocity.0.x * dt) {
+        if let Some(d) = physics::carry_delta(&platforms, center, PLAYER_HALF) {
+            center += d;
+        }
+
+        let dx = velocity.0.x * dt;
+        let blocked_x = physics::collide_x(&solids, &mut center, PLAYER_HALF, dx)
+            | physics::resolve_platforms_x(&platforms, &mut center, PLAYER_HALF, dx);
+        if blocked_x {
             velocity.0.x = 0.0;
         }
-        let (blocked, landed) =
-            physics::collide_y(&solids, &mut center, PLAYER_HALF, velocity.0.y * dt);
-        if blocked {
+
+        let dy = velocity.0.y * dt;
+        let (sb, sl) = physics::collide_y(&solids, &mut center, PLAYER_HALF, dy);
+        let (pb, pl) = physics::resolve_platforms_y(&platforms, &mut center, PLAYER_HALF, dy);
+        if sb || pb {
             velocity.0.y = 0.0;
         }
-        jump.grounded = landed;
+        jump.grounded = sl || pl;
 
         transform.translation.x = center.x;
         transform.translation.y = center.y;

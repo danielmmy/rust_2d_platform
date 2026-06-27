@@ -33,6 +33,85 @@ fn to_tile(p: f32) -> i32 {
     (p / TILE).floor() as i32
 }
 
+/// One moving-platform tile this frame: its world centre + half-extents, and how far
+/// the platform moved (`delta`), so a rider standing on it can be carried along.
+#[derive(Clone, Copy)]
+pub struct PlatformBox {
+    pub center: Vec2,
+    pub half: Vec2,
+    pub delta: Vec2,
+}
+
+/// Every moving-platform tile box for the current room, rebuilt each frame by
+/// [`crate::movers`]. The player resolves against these *after* the static grid.
+#[derive(Resource, Default)]
+pub struct Platforms(pub Vec<PlatformBox>);
+
+/// How close the feet must be to a platform's top to count as "standing on it".
+const CARRY_EPS: f32 = 4.0;
+
+fn overlaps(center: Vec2, half: Vec2, b: &PlatformBox) -> bool {
+    (center.x - b.center.x).abs() < half.x + b.half.x
+        && (center.y - b.center.y).abs() < half.y + b.half.y
+}
+
+/// If the AABB is resting on top of a platform (its feet within [`CARRY_EPS`] of the
+/// platform's *pre-move* top, horizontally over it), return that platform's `delta` —
+/// the rider should be carried by it. Checks the pre-move position (`center - delta`).
+pub fn carry_delta(platforms: &Platforms, center: Vec2, half: Vec2) -> Option<Vec2> {
+    for b in &platforms.0 {
+        let prev = b.center - b.delta; // where the tile was last frame
+        let over_x = (center.x - prev.x).abs() < half.x + b.half.x;
+        let feet = center.y - half.y;
+        let top = prev.y + b.half.y;
+        if over_x && (feet - top).abs() <= CARRY_EPS {
+            return Some(b.delta);
+        }
+    }
+    None
+}
+
+/// Push the AABB out of any platform it overlaps on the X axis (call after the static
+/// pass; `center` is already moved). `dx` gives the travel direction. Returns whether hit.
+pub fn resolve_platforms_x(platforms: &Platforms, center: &mut Vec2, half: Vec2, dx: f32) -> bool {
+    let mut hit = false;
+    for b in &platforms.0 {
+        if dx != 0.0 && overlaps(*center, half, b) {
+            center.x = if dx > 0.0 {
+                b.center.x - b.half.x - half.x
+            } else {
+                b.center.x + b.half.x + half.x
+            };
+            hit = true;
+        }
+    }
+    hit
+}
+
+/// Push the AABB out of any platform it overlaps on the Y axis. Returns
+/// `(blocked, landed_on_top)`.
+pub fn resolve_platforms_y(
+    platforms: &Platforms,
+    center: &mut Vec2,
+    half: Vec2,
+    dy: f32,
+) -> (bool, bool) {
+    let mut blocked = false;
+    let mut landed = false;
+    for b in &platforms.0 {
+        if dy != 0.0 && overlaps(*center, half, b) {
+            if dy < 0.0 {
+                center.y = b.center.y + b.half.y + half.y;
+                landed = true;
+            } else {
+                center.y = b.center.y - b.half.y - half.y;
+            }
+            blocked = true;
+        }
+    }
+    (blocked, landed)
+}
+
 /// Move an AABB (centre + half-extents) along X by `dx`, stopping at solids.
 /// Returns whether it was blocked.
 pub fn collide_x(solids: &Solids, center: &mut Vec2, half: Vec2, dx: f32) -> bool {

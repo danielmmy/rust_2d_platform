@@ -28,7 +28,7 @@ use crate::save::{GameMode, Save};
 use crate::state::GameState;
 use crate::world::{
     ArenaSpawn, BENCH_GLYPH, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
-    LevelRoot, MapData, START_MARKER, Teleport, map_fs_path,
+    LevelRoot, MapData, Mover, START_MARKER, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -106,6 +106,7 @@ struct EditBuffer {
     enemies: Vec<EnemySpawn>, // per-cell enemy types (preserved across edits)
     fog_wall: Vec<ArenaSpawn>, // arena combatants (hand-authored; preserved across edits)
     fog_respawn: bool,        // arena re-arms on bench rest (preserved across edits)
+    movers: Vec<Mover>,       // moving platforms (hand-authored; preserved across edits)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -1338,6 +1339,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         enemies: Vec::new(),
         fog_wall: Vec::new(),
         fog_respawn: false,
+        movers: Vec::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -1397,6 +1399,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         enemies: Vec::new(),
         fog_wall: Vec::new(),
         fog_respawn: false,
+        movers: Vec::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -1473,6 +1476,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         enemies: map.enemies.clone(),
         fog_wall: map.fog_wall.clone(),
         fog_respawn: map.fog_respawn,
+        movers: map.movers.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1508,6 +1512,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         enemies,
         fog_wall: buffer.fog_wall.clone(), // preserved across edits (hand-authored)
         fog_respawn: buffer.fog_respawn,   // preserved across edits (hand-authored)
+        movers: buffer.movers.clone(),     // preserved across edits (hand-authored)
         bg: buffer.bg,
         tiles: buffer
             .grid

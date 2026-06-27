@@ -11,6 +11,10 @@
     ],
     enemies: [
     ],
+    movers: [
+        // pingpong: a 3-tile platform sliding back and forth between two points.
+        (tiles: [(14, 18), (15, 18), (16, 18)], path: [(30, 18)], mode: "pingpong", speed: 90, rest: 500),
+    ],
     bg: [0.32, 0.24, 0.16],
     tiles: [
         "#########..#############################",

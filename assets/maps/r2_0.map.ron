@@ -11,6 +11,10 @@
     ],
     enemies: [
     ],
+    movers: [
+        // once: a 3-tile lift that rises to the top and stays there.
+        (tiles: [(18, 18), (19, 18), (20, 18)], path: [(18, 6)], mode: "once", speed: 55, rest: 1000),
+    ],
     bg: [0.32, 0.32, 0.16],
     tiles: [
         "#########..#############################",

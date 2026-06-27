@@ -70,6 +70,15 @@ pub struct Door {
     pub dest: (i32, i32),
 }
 
+/// Read a `(col, row)` cell tuple from a parsed value.
+fn parse_cell(v: &ron::Value) -> Result<(i32, i32), RonError> {
+    let c = v.as_list()?;
+    if c.len() != 2 {
+        return Err(RonError("a cell must be (col, row)".into()));
+    }
+    Ok((c[0].as_i32()?, c[1].as_i32()?))
+}
+
 /// Read one door tuple `((ocol, orow), "to", (dcol, drow))` from a parsed value.
 fn parse_door(v: &ron::Value) -> Result<Door, RonError> {
     let items = v.as_list()?;
@@ -78,17 +87,67 @@ fn parse_door(v: &ron::Value) -> Result<Door, RonError> {
             "a door must be ((col, row), \"room\", (col, row))".into(),
         ));
     }
-    let cell = |v: &ron::Value| -> Result<(i32, i32), RonError> {
-        let c = v.as_list()?;
-        if c.len() != 2 {
-            return Err(RonError("a door cell must be (col, row)".into()));
-        }
-        Ok((c[0].as_i32()?, c[1].as_i32()?))
-    };
     Ok(Door {
-        origin: cell(&items[0])?,
+        origin: parse_cell(&items[0])?,
         to: items[1].as_str()?.to_string(),
-        dest: cell(&items[2])?,
+        dest: parse_cell(&items[2])?,
+    })
+}
+
+/// How a [`Mover`] cycles its path once it reaches the last stop.
+#[derive(Clone, Copy, PartialEq)]
+pub enum MoveMode {
+    /// Travel to the last stop and halt there.
+    Once,
+    /// Cycle home → stops → home → … forever.
+    Loop,
+    /// Bounce back and forth along the path.
+    PingPong,
+}
+
+/// A moving platform: a rigid group of `tiles` (cells, row 0 = top) whose anchor
+/// (`tiles[0]`) travels through `path` carrying every tile by the same offset. It starts
+/// at its `tiles` home, visits each `path` stop in order at `speed` px/s, pausing `rest`
+/// ms at each, then continues per [`MoveMode`]. In RON:
+/// `(tiles: [(c,r),…], path: [(c,r),…], mode: "loop", speed: 60, rest: 1000)`.
+#[derive(Clone)]
+pub struct Mover {
+    pub tiles: Vec<(i32, i32)>,
+    pub path: Vec<(i32, i32)>,
+    pub mode: MoveMode,
+    pub speed: f32,
+    pub rest: f32,
+}
+
+/// Read one mover struct from a parsed value.
+fn parse_mover(v: &ron::Value) -> Result<Mover, RonError> {
+    let cells = |name: &str| -> Result<Vec<(i32, i32)>, RonError> {
+        match v.try_field(name) {
+            Some(list) => list.as_list()?.iter().map(parse_cell).collect(),
+            None => Ok(Vec::new()),
+        }
+    };
+    let tiles = cells("tiles")?;
+    if tiles.is_empty() {
+        return Err(RonError("a mover needs at least one tile".into()));
+    }
+    let mode = match v.try_field("mode").and_then(|m| m.as_str().ok()) {
+        Some("once") => MoveMode::Once,
+        Some("pingpong") => MoveMode::PingPong,
+        _ => MoveMode::Loop,
+    };
+    Ok(Mover {
+        tiles,
+        path: cells("path")?,
+        mode,
+        speed: v
+            .try_field("speed")
+            .and_then(|s| s.as_f32().ok())
+            .unwrap_or(60.0),
+        rest: v
+            .try_field("rest")
+            .and_then(|s| s.as_f32().ok())
+            .unwrap_or(0.0),
     })
 }
 
@@ -132,6 +191,8 @@ pub struct MapData {
     /// If set, this arena **re-arms on a bench rest** (its foes respawn); otherwise it
     /// stays cleared permanently. Bosses persist regardless (their kill is saved).
     pub fog_respawn: bool,
+    /// Moving platforms (empty = none). See [`Mover`].
+    pub movers: Vec<Mover>,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -225,6 +286,15 @@ impl MapData {
             .unwrap_or(0)
             != 0;
 
+        let movers = match value.try_field("movers") {
+            Some(list) => list
+                .as_list()?
+                .iter()
+                .map(parse_mover)
+                .collect::<Result<Vec<_>, RonError>>()?,
+            None => Vec::new(),
+        };
+
         // Each edge is a list of doors, `((ocol, orow), "to", (dcol, drow))`.
         let doors = |name: &str| -> Result<Vec<Door>, RonError> {
             match value.try_field(name) {
@@ -246,6 +316,7 @@ impl MapData {
             enemies,
             fog_wall,
             fog_respawn,
+            movers,
             bg,
             tiles,
         })
@@ -320,12 +391,37 @@ impl MapData {
         let south = door_list(&self.south);
         let east = door_list(&self.east);
         let west = door_list(&self.west);
+        // Movers: a `(col, row)` cell list, then one struct per platform.
+        let cell_list = |cells: &[(i32, i32)]| -> String {
+            let inner: Vec<String> = cells.iter().map(|(c, r)| format!("({c}, {r})")).collect();
+            format!("[{}]", inner.join(", "))
+        };
+        let movers: String = self
+            .movers
+            .iter()
+            .map(|m| {
+                let mode = match m.mode {
+                    MoveMode::Once => "once",
+                    MoveMode::PingPong => "pingpong",
+                    MoveMode::Loop => "loop",
+                };
+                format!(
+                    "        (tiles: {}, path: {}, mode: \"{}\", speed: {}, rest: {}),\n",
+                    cell_list(&m.tiles),
+                    cell_list(&m.path),
+                    mode,
+                    m.speed,
+                    m.rest
+                )
+            })
+            .collect();
         format!(
             "(\n    name: \"{}\",\n    solid: \"{}\",\n    spikes: \"{}\",\n    rocks: \"{}\",\n    \
              north: [\n{north}    ],\n    south: [\n{south}    ],\n    \
              east: [\n{east}    ],\n    west: [\n{west}    ],\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
              fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
+             movers: [\n{movers}    ],\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
@@ -841,10 +937,21 @@ fn handle_load_map(
     let is_cleared = cleared_bosses.0.contains(&load.map) || cleared_arenas.0.contains(&load.map);
     let arena_armed = !map.fog_wall.is_empty() && !is_cleared;
 
+    // Cells owned by a moving platform (authored rows, 0 = top): skipped in the static
+    // pass so they're neither solid nor a static sprite — the mover provides both.
+    let mover_cells: Vec<(i32, i32)> = map
+        .movers
+        .iter()
+        .flat_map(|m| m.tiles.iter().copied())
+        .collect();
+
     for (r, line) in map.tiles.iter().enumerate() {
         let row = height - 1 - r as i32; // flip so row 0 is the top, y points up
         for (c, ch) in line.chars().enumerate() {
             let col = c as i32;
+            if mover_cells.contains(&(col, r as i32)) {
+                continue;
+            }
             let center = Vec2::new(
                 col as f32 * TILE + TILE / 2.0,
                 row as f32 * TILE + TILE / 2.0,
@@ -938,6 +1045,11 @@ fn handle_load_map(
                 ),
             ));
         }
+    }
+
+    // Moving platforms (dynamic colliders; their cells were skipped above).
+    for mover in &map.movers {
+        crate::movers::spawn_mover(&mut commands, &assets, mover, height);
     }
 
     // If the player dropped a bloodstain in this room, place its marker so they can
@@ -1396,6 +1508,13 @@ mod tests {
                 row: 6,
             }],
             fog_respawn: true,
+            movers: vec![Mover {
+                tiles: vec![(5, 5), (6, 5)],
+                path: vec![(10, 5), (10, 8)],
+                mode: MoveMode::PingPong,
+                speed: 60.0,
+                rest: 1000.0,
+            }],
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
@@ -1434,5 +1553,12 @@ mod tests {
         assert!(parsed.fog_wall[0].boss);
         assert_eq!(parsed.fog_wall[0].col, 5);
         assert_eq!(parsed.fog_wall[0].row, 6);
+        // Movers round-trip: tiles, path, mode, speed, rest.
+        assert_eq!(parsed.movers.len(), 1);
+        assert_eq!(parsed.movers[0].tiles, vec![(5, 5), (6, 5)]);
+        assert_eq!(parsed.movers[0].path, vec![(10, 5), (10, 8)]);
+        assert!(parsed.movers[0].mode == MoveMode::PingPong);
+        assert_eq!(parsed.movers[0].speed, 60.0);
+        assert_eq!(parsed.movers[0].rest, 1000.0);
     }
 }

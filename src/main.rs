@@ -15,6 +15,7 @@ mod hazards;
 mod health;
 mod input;
 mod menu;
+mod movers;
 mod physics;
 mod player;
 mod ron;
@@ -83,6 +84,7 @@ fn main() {
         input::InputPlugin,
         world::WorldPlugin,
         player::PlayerPlugin,
+        movers::MoversPlugin,
         hazards::HazardPlugin,
         health::HealthPlugin,
         combat::CombatPlugin,
