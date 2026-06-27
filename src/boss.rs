@@ -25,11 +25,20 @@ use crate::stats::{self, Stats};
 use crate::world::{CurrentRoom, GameAssets, MapEntity};
 
 pub(crate) const BOSS_HALF: Vec2 = Vec2::new(38.0, 44.0);
+/// On-screen size of the boss sprite (square); taller than the hitbox, so it's lifted
+/// (see [`spawn_boss_at`]) to keep its feet out of the floor.
+const BOSS_SPRITE: f32 = 112.0;
 const BOSS_SPEED: f32 = 90.0;
 const BOSS_GRAVITY: f32 = 1400.0;
 const BOSS_MAX_FALL: f32 = 900.0;
 const SLAM_VY: f32 = 540.0;
 const SLAM_SPEED: f32 = 170.0;
+
+/// The boss won't flip to face the other way more often than this (seconds), and only
+/// once the player is at least [`TURN_DEADZONE`] to the side — so standing right above it
+/// can't make it spin back and forth.
+const TURN_COOLDOWN: f32 = 0.5;
+const TURN_DEADZONE: f32 = 26.0;
 
 const IDLE_TIME: f32 = 0.95;
 const WINDUP_TIME: f32 = 0.45;
@@ -40,6 +49,8 @@ const PROJECTILE_SPEED: f32 = 280.0;
 const PROJECTILE_HALF: Vec2 = Vec2::new(8.0, 8.0);
 const PROJECTILE_LIFE: f32 = 2.6;
 const SUMMONS: i32 = 2;
+/// Cap on how many summoned enemies may be alive at once — a Summon only tops up to this.
+const MAX_SUMMONS: i32 = 2;
 /// Enemy kind the boss summons (the red chaser).
 const SUMMON_KIND: usize = 1;
 
@@ -98,6 +109,9 @@ pub(crate) struct Boss {
     /// Base sprite tint (from the boss kind); modulated by the hit flash.
     color: Color,
     dir: f32,
+    /// Time left before the boss may flip its facing again (anti-jitter; see
+    /// [`TURN_COOLDOWN`]).
+    turn_cd: f32,
     vy: f32,
     state: BossState,
     next: u8,
@@ -105,7 +119,36 @@ pub(crate) struct Boss {
     pub(crate) flash: f32,
 }
 
+/// What the boss is visibly doing, for the animation controller (see
+/// [`crate::anim`]). The windups carry a `0..1` progress so the telegraph builds in
+/// step with the actual wind-up timer — a fair, readable tell before each attack.
+pub(crate) enum BossPose {
+    Advance,
+    SlamWindup(f32),
+    Slam,
+    ThrowWindup(f32),
+    SummonWindup(f32),
+    Recover,
+}
+
 impl Boss {
+    /// Map the current behaviour state to an animation pose.
+    pub(crate) fn pose(&self) -> BossPose {
+        match self.state {
+            BossState::Idle(_) => BossPose::Advance, // it ambles toward the player
+            BossState::Windup(t, attack) => {
+                let progress = (1.0 - t / WINDUP_TIME).clamp(0.0, 1.0);
+                match attack {
+                    Attack::Slam => BossPose::SlamWindup(progress),
+                    Attack::Throw => BossPose::ThrowWindup(progress),
+                    Attack::Summon => BossPose::SummonWindup(progress),
+                }
+            }
+            BossState::Slamming => BossPose::Slam,
+            BossState::Recover(_) => BossPose::Recover,
+        }
+    }
+
     /// Past half health the boss attacks faster — a crude second phase.
     fn enraged(&self) -> bool {
         self.health * 2 <= self.max_health
@@ -129,6 +172,11 @@ impl Boss {
 /// A fog-wall mist cell (cosmetic; the seal is the locked exits).
 #[derive(Component)]
 pub(crate) struct FogGate;
+
+/// Marks an enemy conjured by the boss's Summon attack, so live summons can be counted
+/// and capped at [`MAX_SUMMONS`].
+#[derive(Component)]
+struct Summoned;
 
 /// A thrown projectile that hurts the player on contact.
 #[derive(Component)]
@@ -212,6 +260,7 @@ pub(crate) fn spawn_boss_at(commands: &mut Commands, assets: &GameAssets, kind: 
             max_health: spec.health,
             color: spec.color,
             dir: -1.0,
+            turn_cd: 0.0,
             vy: 0.0,
             state: BossState::Idle(IDLE_TIME),
             next: 0,
@@ -223,9 +272,15 @@ pub(crate) fn spawn_boss_at(commands: &mut Commands, assets: &GameAssets, kind: 
         Sprite {
             image: assets.boss.clone(),
             color: spec.color,
-            custom_size: Some(Vec2::splat(112.0)),
+            custom_size: Some(Vec2::splat(BOSS_SPRITE)),
             ..default()
         },
+        // The art fills its frame but the hitbox is shorter, so lift the sprite by the
+        // difference (half-sprite − half-hitbox) to sit its feet on the ground, not in it.
+        bevy::sprite::Anchor(Vec2::new(
+            0.0,
+            -(BOSS_SPRITE * 0.5 - BOSS_HALF.y) / BOSS_SPRITE,
+        )),
         Transform::from_xyz(pos.x, pos.y, 4.0),
     ));
 }
@@ -290,6 +345,7 @@ fn boss_ai(
     assets: Res<GameAssets>,
     mut commands: Commands,
     players: Query<&Transform, (With<Player>, Without<Boss>)>,
+    summons: Query<(), With<Summoned>>,
     mut bosses: Query<(&mut Transform, &mut Boss, &mut Sprite)>,
 ) {
     let dt = time.delta_secs();
@@ -297,14 +353,24 @@ fn boss_ai(
         return;
     }
     let player_pos = players.single().ok().map(|t| t.translation.truncate());
+    // Budget for the Summon attack: top up to MAX_SUMMONS live summons, never beyond.
+    let summon_budget = (MAX_SUMMONS - summons.iter().count() as i32).max(0);
 
     for (mut transform, mut boss, mut sprite) in &mut bosses {
         boss.flash = (boss.flash - dt).max(0.0);
+        boss.turn_cd = (boss.turn_cd - dt).max(0.0);
         let mut center = transform.translation.truncate();
 
-        // Face the player.
+        // Follow the player, but only commit to a new facing when they're clearly to one
+        // side and the turn cooldown has elapsed — otherwise standing above it makes the
+        // sprite flip every frame.
         if let Some(pp) = player_pos {
-            boss.dir = if pp.x >= center.x { 1.0 } else { -1.0 };
+            let dx = pp.x - center.x;
+            let want = if dx >= 0.0 { 1.0 } else { -1.0 };
+            if want != boss.dir && dx.abs() > TURN_DEADZONE && boss.turn_cd <= 0.0 {
+                boss.dir = want;
+                boss.turn_cd = TURN_COOLDOWN;
+            }
         }
 
         let grounded = solids.solid_at(center.x, center.y - BOSS_HALF.y - 2.0);
@@ -334,6 +400,7 @@ fn boss_ai(
                         &mut boss,
                         center,
                         player_pos,
+                        summon_budget,
                         &assets,
                         &mut commands,
                     );
@@ -383,6 +450,7 @@ fn launch(
     boss: &mut Boss,
     center: Vec2,
     player_pos: Option<Vec2>,
+    summon_budget: i32,
     assets: &GameAssets,
     commands: &mut Commands,
 ) -> BossState {
@@ -417,10 +485,13 @@ fn launch(
             BossState::Recover(boss.recover_time())
         }
         Attack::Summon => {
-            for i in 0..SUMMONS {
+            // Only top up to the cap — a flooded arena can't be made worse.
+            let count = SUMMONS.min(summon_budget);
+            for i in 0..count {
                 let offset = (i as f32 - 0.5) * 60.0;
                 commands.spawn((
                     MapEntity,
+                    Summoned,
                     Enemy::new(SUMMON_KIND),
                     Hazard {
                         half: Vec2::new(10.0, 13.0),

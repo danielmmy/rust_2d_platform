@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
+use crate::boss::{Boss, BossPose};
 use crate::combat::{ENEMY_KINDS, Enemy};
 use crate::health::Invuln;
 use crate::player::{JumpState, MovementConfig, Player, Velocity};
@@ -130,8 +131,10 @@ impl Plugin for AnimationPlugin {
                 attach_portals,
                 attach_benches,
                 attach_enemies,
+                attach_boss,
                 control_player,
                 control_portals,
+                control_boss,
                 advance_animations,
             )
                 .chain()
@@ -387,4 +390,116 @@ fn attach_enemies(
             .entity(entity)
             .insert(SpriteAnimation::new(kind.clip));
     }
+}
+
+// --- boss ----------------------------------------------------------------
+
+const BOSS_COLS: u32 = 8;
+const BOSS_ROWS: u32 = 6;
+
+// Rows in the 8×6 demon sheet (drawn facing right; `boss` flips it to face the player):
+// 0 idle/hover, 1 advance, 2 slam (windup 16-21, air 22-23), 3 throw windup,
+// 4 summon windup, 5 recover. The windups are Manual so the telegraph tracks the
+// wind-up timer exactly (see `control_boss`).
+const BOSS_IDLE: Clip = Clip {
+    first: 0,
+    count: 6,
+    fps: 6.0,
+    playback: Playback::Loop,
+};
+const BOSS_WALK: Clip = Clip {
+    first: 8,
+    count: 8,
+    fps: 11.0,
+    playback: Playback::Loop,
+};
+const BOSS_SLAM_WINDUP: Clip = Clip {
+    first: 16,
+    count: 6,
+    fps: 12.0,
+    playback: Playback::Manual,
+};
+const BOSS_SLAM_AIR: Clip = Clip {
+    first: 22,
+    count: 2,
+    fps: 8.0,
+    playback: Playback::Loop,
+};
+const BOSS_THROW_WINDUP: Clip = Clip {
+    first: 24,
+    count: 8,
+    fps: 12.0,
+    playback: Playback::Manual,
+};
+const BOSS_SUMMON_WINDUP: Clip = Clip {
+    first: 32,
+    count: 6,
+    fps: 12.0,
+    playback: Playback::Manual,
+};
+const BOSS_RECOVER: Clip = Clip {
+    first: 40,
+    count: 4,
+    fps: 6.0,
+    playback: Playback::Loop,
+};
+
+/// Give the boss its atlas + animation once the sheet loads (the sheet is already on
+/// its `Sprite`, set by `boss::spawn_boss_at`).
+#[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
+fn attach_boss(
+    mut commands: Commands,
+    assets: Res<GameAssets>,
+    images: Res<Assets<Image>>,
+    mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+    mut cache: ResMut<AtlasCache>,
+    mut bosses: Query<(Entity, &mut Sprite), (With<Boss>, Without<SpriteAnimation>)>,
+) {
+    for (entity, mut sprite) in &mut bosses {
+        let Some(layout) = atlas_for(
+            &mut cache,
+            &mut layouts,
+            &images,
+            &assets.boss,
+            BOSS_COLS,
+            BOSS_ROWS,
+        ) else {
+            continue;
+        };
+        sprite.texture_atlas = Some(TextureAtlas { layout, index: 0 });
+        commands
+            .entity(entity)
+            .insert(SpriteAnimation::new(BOSS_IDLE));
+    }
+}
+
+/// Pick the boss's clip from its [`BossPose`]. Wind-ups are Manual, their frame keyed
+/// to the attack's progress so the telegraph builds smoothly and finishes right as the
+/// attack fires.
+fn control_boss(mut bosses: Query<(&Boss, &mut SpriteAnimation)>) {
+    for (boss, mut anim) in &mut bosses {
+        match boss.pose() {
+            BossPose::Advance => anim.play(BOSS_WALK),
+            BossPose::Slam => anim.play(BOSS_SLAM_AIR),
+            BossPose::Recover => anim.play(BOSS_RECOVER),
+            BossPose::SlamWindup(p) => {
+                anim.play(BOSS_SLAM_WINDUP);
+                set_manual_frame(&mut anim, p);
+            }
+            BossPose::ThrowWindup(p) => {
+                anim.play(BOSS_THROW_WINDUP);
+                set_manual_frame(&mut anim, p);
+            }
+            BossPose::SummonWindup(p) => {
+                anim.play(BOSS_SUMMON_WINDUP);
+                set_manual_frame(&mut anim, p);
+            }
+        }
+    }
+}
+
+/// Map a `0..1` progress onto a Manual clip's frames.
+fn set_manual_frame(anim: &mut SpriteAnimation, progress: f32) {
+    let last = anim.clip.count.saturating_sub(1);
+    anim.frame = ((progress * anim.clip.count as f32) as usize).min(last);
 }

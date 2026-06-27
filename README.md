@@ -140,7 +140,8 @@ every one of them is dead. Each `fog_wall` entry is `(boss: 0|1, kind, col, row)
 original, `1` a tougher red brute with double health); with `boss: 0` it's a normal
 enemy of that `kind`. A **boss** has a large health pool (shown on a bar across the
 top) and cycles three attacks — a **slam** leap, a **fan of throwables**, and
-**summoning** lesser foes — turning more aggressive past half health. Beat it (and any
+**summoning** lesser foes (up to two alive at once) — turning more aggressive past half
+health. Beat it (and any
 companions) for a big **energy** payout and a permanent new ability: the **double
 jump** (a second jump in mid-air — press jump again while airborne). The default world
 ships two: the original boss in `r0_1` and the red brute in the far corner `r3_2`. Each
@@ -162,7 +163,7 @@ The structure is plugin-per-concern:
 | [`input`](src/input.rs) | Keyboard + gamepad → one `PlayerIntent`. |
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
 | [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`. |
-| [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player / portal / bench / enemy clips. |
+| [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player / portal / bench / enemy / boss clips. |
 | [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches; loads each save's world from its [`LevelRoot`]. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
@@ -314,13 +315,13 @@ needed to run. Edit the source files and **rebuild** to embed the new versions.
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
 (`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `flyer.png`,
-`boss.png`, `orb.png`, `slash.png`). Sizes are set in code via `custom_size`, so any
-resolution works — the world keeps the same scale. The enemy sheets (`enemy.png`
-walkers, `jumper.png` leapers, `flyer.png` winged flyers) are **near-white** so each
-kind tints them to its colour; `boss.png` is a single big, full-colour sprite.
+`orb.png`, `slash.png`). Sizes are set in code via `custom_size`, so any resolution
+works — the world keeps the same scale. The enemy sheets (`enemy.png` walkers,
+`jumper.png` leapers, `flyer.png` winged flyers) are **near-white** so each kind tints
+them to its colour.
 
-**`player.png`, `portal.png`, and `bench.png` are sprite sheets** — each an N×M
-grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
+**`player.png`, `portal.png`, `bench.png`, and `boss.png` are sprite sheets** — each an
+N×M grid of equal frames that [`anim`](src/anim.rs) imports into a texture atlas (sizing
 every frame from the image ÷ grid, so a re-drawn sheet of the same grid just works):
 
 - `player.png` is **6×4** — a **side-profile** character facing right (the
@@ -332,6 +333,13 @@ every frame from the image ÷ grid, so a re-drawn sheet of the same grid just wo
   the pad) — an upright vortex, both looping.
 - `bench.png` is **6×1**: a static wooden bench whose **fairy lights** drift and
   twinkle (one looping clip).
+- `boss.png` is **8×6** — the horned demon in **¾ profile facing right** (the
+  [`boss`](src/boss.rs) flips it to face the player). Rows: 0 = idle/hover,
+  1 = advance, 2 = slam (wind-up `16-21`, dive/impact `22-23`), 3 = throw wind-up,
+  4 = summon wind-up, 5 = recover. The three wind-up clips are **Manual**, their frame
+  keyed to the attack's wind-up timer so each attack has a clear, fairly-timed
+  **telegraph** (rear-up + roar before a slam, a swelling ember before a throw, a
+  growing rune aura before a summon).
 
 For a different grid, change the `*_COLS`/`*_ROWS` and `Clip` constants in
 [`anim`](src/anim.rs). To animate something new, load a sheet, attach a
@@ -347,6 +355,16 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-26** — Boss polish: lifted the sprite so its feet rest on the ground instead
+  of clipping into it (an [`Anchor`](src/boss.rs) offset for the hitbox/art height gap),
+  and **capped Summon at two live minions** (`MAX_SUMMONS`) so the arena can't be flooded.
+- **2026-06-26** — Animated the **boss**: `boss.png` is now an **8×6 sheet** of the horned
+  demon (idle/hover, an 8-frame advance, slam, throw, summon, recover — 40+ frames) drawn
+  in ¾ profile facing right, so [`boss`](src/boss.rs) flips it to **face the player**.
+  Each attack now has a **telegraph** — a Manual wind-up clip whose frame tracks the
+  wind-up timer (rear-up + roar before a slam, a swelling ember before a throw, a growing
+  aura before a summon) — giving the player a fair window to react. Driven by a new
+  `Boss::pose()` + `control_boss`/`attach_boss` in [`anim`](src/anim.rs).
 - **2026-06-26** — Reworked room connections into **coordinate doors**. Each edge is now a
   list of [`Door`](src/world.rs)s — `((origin_col, origin_row), "to", (dest_col, dest_row))`
   — replacing the old plain neighbour names. Walking off an edge takes the door nearest the
