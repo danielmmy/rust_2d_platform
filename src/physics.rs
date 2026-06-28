@@ -88,6 +88,21 @@ pub fn resolve_platforms_x(platforms: &Platforms, center: &mut Vec2, half: Vec2,
     hit
 }
 
+/// Whether there's a wall (static tile or platform) immediately to `dir` (-1 left,
+/// +1 right) of the AABB — used for wall slide / wall jump. Samples low/mid/high so a
+/// short ledge still counts.
+pub fn wall_at(solids: &Solids, platforms: &Platforms, center: Vec2, half: Vec2, dir: f32) -> bool {
+    let x = center.x + dir * (half.x + 2.0);
+    for off in [-half.y + EPS, 0.0, half.y - EPS] {
+        if solids.solid_at(x, center.y + off) {
+            return true;
+        }
+    }
+    platforms.0.iter().any(|b| {
+        (x - b.center.x).abs() <= b.half.x && (center.y - b.center.y).abs() < half.y + b.half.y
+    })
+}
+
 /// Push the AABB out of any platform it overlaps on the Y axis. Returns
 /// `(blocked, landed_on_top)`.
 pub fn resolve_platforms_y(

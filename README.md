@@ -74,6 +74,10 @@ All knobs live in [`MovementConfig`](src/player.rs) — tweak and re-run:
 - **Variable height** — releasing jump early cuts the rise short.
 - **Asymmetric gravity** — you fall faster than you rise (snappy, not floaty).
 - **Apex control** — reduced gravity near the peak for better air steering.
+- **Wall slide + wall jump** — in mid‑air, hold toward a wall to **cling and slow your
+  fall**; press jump to **launch up and away** from it. A brief control lockout after
+  the jump keeps the launch from being cancelled if you're still holding toward the wall.
+  Works on static walls **and** moving platforms.
 
 ## Rooms, traversal, and danger
 
@@ -378,6 +382,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-27** — Added **wall slide + wall jump** ([`player`](src/player.rs)). In the air,
+  holding into a wall makes the player **cling and slow their fall** (`wall_slide_speed`);
+  jumping then **launches up and away** (`wall_jump_x`) with a short control lockout
+  (`wall_jump_lock`) so the launch isn't cancelled. Jump priority is ground → wall →
+  double‑jump; works against static tiles and moving platforms (new `physics::wall_at`).
 - **2026-06-27** — Added **movers** ([`movers`](src/movers.rs)), a generic "move what's
   already there" system. A map's `movers` list — `(tiles, path, mode, speed, rest)` —
   **adopts whatever entity the grid authors at its cells** (a solid, spike, bench, …) and

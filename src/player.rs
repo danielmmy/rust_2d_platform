@@ -8,6 +8,8 @@
 //! * **Variable height** — releasing jump early cuts the rise short.
 //! * **Asymmetric gravity** — you fall faster than you rise (snappy, not floaty).
 //! * **Apex control** — slightly reduced gravity near the peak for air control.
+//! * **Wall slide + wall jump** — hold into a wall in the air to cling and slow your
+//!   fall, then jump to launch up and away (a brief control lockout keeps the launch).
 
 use bevy::prelude::*;
 
@@ -36,6 +38,12 @@ pub struct JumpState {
     /// An unused mid-air jump is available (refreshed on landing; spent by the
     /// double jump). Only usable once the ability is unlocked — see [`Abilities`].
     air_jump: bool,
+    /// The side of a wall the player is currently sliding on: `-1` left, `+1` right,
+    /// `0` none. Read for facing/animation.
+    wall: f32,
+    /// Seconds of reduced horizontal control after a wall jump, so the launch off the
+    /// wall isn't instantly cancelled by holding back toward it.
+    wall_lock: f32,
 }
 
 impl JumpState {
@@ -67,6 +75,12 @@ pub struct MovementConfig {
     pub jump_cut: f32,
     pub apex_speed: f32,
     pub apex_gravity_mult: f32,
+    /// Max fall speed while sliding down a wall (slower than a free fall).
+    pub wall_slide_speed: f32,
+    /// Horizontal launch speed away from the wall on a wall jump.
+    pub wall_jump_x: f32,
+    /// Seconds of reduced horizontal control right after a wall jump.
+    pub wall_jump_lock: f32,
 }
 
 impl Default for MovementConfig {
@@ -84,6 +98,9 @@ impl Default for MovementConfig {
             jump_cut: 0.45,
             apex_speed: 70.0,
             apex_gravity_mult: 0.55,
+            wall_slide_speed: 120.0,
+            wall_jump_x: 250.0,
+            wall_jump_lock: 0.16,
         }
     }
 }
@@ -132,16 +149,46 @@ pub(crate) fn movement(
     let stunned = stun.0 > 0.0;
 
     for (mut transform, mut velocity, mut jump, mut sprite) in &mut query {
+        // Brief reduced-control window after a wall jump (so the launch isn't cancelled
+        // by immediately holding back toward the wall).
+        let locked = jump.wall_lock > 0.0;
+        jump.wall_lock = (jump.wall_lock - dt).max(0.0);
+
         if !stunned {
-            // --- horizontal ---
-            let target = intent.move_x * cfg.run_speed;
-            let accel = if jump.grounded {
-                cfg.accel_ground
+            // --- wall cling: airborne + holding into a wall that's there ---
+            let here = transform.translation.truncate();
+            let wall_dir = if !jump.grounded
+                && intent.move_x > 0.1
+                && physics::wall_at(&solids, &platforms, here, PLAYER_HALF, 1.0)
+            {
+                1.0
+            } else if !jump.grounded
+                && intent.move_x < -0.1
+                && physics::wall_at(&solids, &platforms, here, PLAYER_HALF, -1.0)
+            {
+                -1.0
             } else {
-                cfg.accel_air
+                0.0
             };
-            velocity.0.x = approach(velocity.0.x, target, accel * dt);
-            if intent.move_x > 0.05 {
+            jump.wall = wall_dir;
+
+            // --- horizontal (coasts during the wall-jump lockout) ---
+            if !locked {
+                let target = intent.move_x * cfg.run_speed;
+                let accel = if jump.grounded {
+                    cfg.accel_ground
+                } else {
+                    cfg.accel_air
+                };
+                velocity.0.x = approach(velocity.0.x, target, accel * dt);
+            }
+
+            // --- facing: toward the wall while clinging, else launch / input ---
+            if wall_dir != 0.0 {
+                sprite.flip_x = wall_dir < 0.0;
+            } else if locked {
+                sprite.flip_x = velocity.0.x < 0.0;
+            } else if intent.move_x > 0.05 {
                 sprite.flip_x = false;
             } else if intent.move_x < -0.05 {
                 sprite.flip_x = true;
@@ -160,12 +207,20 @@ pub(crate) fn movement(
                 jump.buffer = (jump.buffer - dt).max(0.0);
             }
 
-            // --- start a jump ---
+            // --- start a jump: ground (coyote) → wall → double ---
             if jump.buffer > 0.0 && jump.coyote > 0.0 {
                 velocity.0.y = cfg.jump_speed;
                 jump.jumping = true;
                 jump.buffer = 0.0;
                 jump.coyote = 0.0;
+            } else if jump.buffer > 0.0 && wall_dir != 0.0 {
+                // wall jump: up and away from the wall, with a short control lockout
+                velocity.0.y = cfg.jump_speed;
+                velocity.0.x = -wall_dir * cfg.wall_jump_x;
+                jump.jumping = true;
+                jump.buffer = 0.0;
+                jump.wall = 0.0;
+                jump.wall_lock = cfg.wall_jump_lock;
             } else if intent.jump_pressed
                 && !jump.grounded
                 && abilities.double_jump
@@ -185,6 +240,8 @@ pub(crate) fn movement(
             if velocity.0.y <= 0.0 {
                 jump.jumping = false;
             }
+        } else {
+            jump.wall = 0.0;
         }
 
         // --- gravity (asymmetric + apex control) ---
@@ -198,6 +255,11 @@ pub(crate) fn movement(
             cfg.gravity_down
         };
         velocity.0.y = (velocity.0.y - gravity * dt).max(-cfg.max_fall);
+
+        // --- wall slide: cap the fall speed while clinging ---
+        if jump.wall != 0.0 && velocity.0.y < -cfg.wall_slide_speed {
+            velocity.0.y = -cfg.wall_slide_speed;
+        }
 
         // --- integrate + collide (X then Y), against the static grid then any moving
         // platforms. A platform the player is standing on first carries them along. ---
