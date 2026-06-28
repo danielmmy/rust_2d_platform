@@ -5,7 +5,8 @@
 //!
 //! - **Tiles** — paint the current room with the game's own sprites, resize it
 //!   freely, recolour it, pick a **parallax scenery set** (`V`), trace a **multigrid
-//!   stamp** shape (`G`, then paint it with any brush), and save.
+//!   stamp** shape (`G`, then paint it with any brush), author a **moving platform**
+//!   (`P` — select an area, then mark its stops), and save.
 //! - **Rooms** (`M`) — a map of every room where you select one to edit, **add**,
 //!   **delete**, **reorder** (grab + move), or **reset** to the default 12.
 //!
@@ -30,7 +31,7 @@ use crate::scenery;
 use crate::state::GameState;
 use crate::world::{
     ArenaSpawn, BENCH_GLYPH, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
-    LevelRoot, MapData, Mover, START_MARKER, Scenery, Teleport, map_fs_path,
+    LevelRoot, MapData, MoveMode, Mover, START_MARKER, Scenery, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -108,7 +109,7 @@ struct EditBuffer {
     enemies: Vec<EnemySpawn>, // per-cell enemy types (preserved across edits)
     fog_wall: Vec<ArenaSpawn>, // arena combatants (hand-authored; preserved across edits)
     fog_respawn: bool,        // arena re-arms on bench rest (preserved across edits)
-    movers: Vec<Mover>,       // moving platforms (hand-authored; preserved across edits)
+    movers: Vec<Mover>,       // moving platforms (authored with the `P` tool; preserved)
     scenery: Scenery,         // per-layer parallax scenery (V picks layer, C picks set)
     scenery_slot: usize,      // which scenery layer the `C` key cycles (0=far..3=fg)
     bg: [f32; 3],
@@ -123,7 +124,26 @@ struct EditBuffer {
     defining: Option<(usize, usize)>,
     /// Cells visited while tracing the current shape (absolute), turned into `stamp` offsets.
     define_cells: Vec<(usize, usize)>,
+    /// Which step of the moving-platform tool is active (`None` = not authoring a mover).
+    mover_edit: Option<MoverStep>,
+    /// The platform's cells while authoring (absolute; `[0]` is the home anchor).
+    mover_tiles: Vec<(usize, usize)>,
+    /// The stop points the anchor travels to while authoring (absolute, in order).
+    mover_path: Vec<(usize, usize)>,
+    /// The new mover's cycle mode / speed (px/s) / pause (ms), tweaked while authoring.
+    mover_mode: MoveMode,
+    mover_speed: f32,
+    mover_rest: f32,
     status: String,
+}
+
+/// The two steps of authoring a [`Mover`] in the tile view (see the `P` key).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MoverStep {
+    /// Selecting the platform's cells (trace them like the stamp brush).
+    Area,
+    /// Marking the stop points the platform travels through.
+    Path,
 }
 
 /// The cursor in the room-map view.
@@ -345,6 +365,97 @@ fn edit_tiles(
         return;
     }
 
+    // The moving-platform tool. Step 1 (Area) traces the platform's cells like the stamp
+    // brush; step 2 (Path) drops the stop points it travels through. `P`/`enter` advances
+    // then finishes; `esc` cancels. In Path, `Tab` cycles the mode and `-/=`, `[ ]` tune
+    // speed / pause.
+    if let Some(step) = buffer.mover_edit {
+        let cols = buffer.grid.first().map_or(0, Vec::len);
+        let rows = buffer.grid.len();
+        let mut moved = false;
+        if keys.just_pressed(KeyCode::ArrowLeft) && buffer.cursor.0 > 0 {
+            buffer.cursor.0 -= 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowRight) && buffer.cursor.0 + 1 < cols {
+            buffer.cursor.0 += 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowUp) && buffer.cursor.1 > 0 {
+            buffer.cursor.1 -= 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowDown) && buffer.cursor.1 + 1 < rows {
+            buffer.cursor.1 += 1;
+            moved = true;
+        }
+        let cell = buffer.cursor;
+        match step {
+            MoverStep::Area => {
+                if moved && !buffer.mover_tiles.contains(&cell) {
+                    buffer.mover_tiles.push(cell); // trace the platform's cells
+                }
+                if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::KeyP) {
+                    buffer.mover_edit = Some(MoverStep::Path);
+                    buffer.status = "mover: drop stops (space), P/enter finish".to_string();
+                }
+            }
+            MoverStep::Path => {
+                if keys.just_pressed(KeyCode::Space) && !buffer.mover_path.contains(&cell) {
+                    buffer.mover_path.push(cell); // a stop the anchor travels to
+                }
+                if keys.just_pressed(KeyCode::Tab) {
+                    buffer.mover_mode = match buffer.mover_mode {
+                        MoveMode::Loop => MoveMode::PingPong,
+                        MoveMode::PingPong => MoveMode::Once,
+                        MoveMode::Once => MoveMode::Loop,
+                    };
+                }
+                if keys.just_pressed(KeyCode::Equal) {
+                    buffer.mover_speed = (buffer.mover_speed + 10.0).min(600.0);
+                }
+                if keys.just_pressed(KeyCode::Minus) {
+                    buffer.mover_speed = (buffer.mover_speed - 10.0).max(10.0);
+                }
+                if keys.just_pressed(KeyCode::BracketRight) {
+                    buffer.mover_rest += 100.0;
+                }
+                if keys.just_pressed(KeyCode::BracketLeft) {
+                    buffer.mover_rest = (buffer.mover_rest - 100.0).max(0.0);
+                }
+                if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::KeyP) {
+                    if buffer.mover_path.is_empty() {
+                        buffer.status = "mover: mark at least one stop (space)".to_string();
+                    } else {
+                        let to_cell = |&(x, y): &(usize, usize)| (x as i32, y as i32);
+                        let mover = Mover {
+                            tiles: buffer.mover_tiles.iter().map(to_cell).collect(),
+                            path: buffer.mover_path.iter().map(to_cell).collect(),
+                            mode: buffer.mover_mode,
+                            speed: buffer.mover_speed,
+                            rest: buffer.mover_rest,
+                        };
+                        buffer.movers.push(mover);
+                        buffer.mover_edit = None;
+                        buffer.mover_tiles.clear();
+                        buffer.mover_path.clear();
+                        buffer.status =
+                            save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
+                    }
+                }
+            }
+        }
+        if keys.just_pressed(KeyCode::Escape) {
+            buffer.mover_edit = None;
+            buffer.mover_tiles.clear();
+            buffer.mover_path.clear();
+            buffer.status = "mover cancelled".to_string();
+        }
+        redraw(&mut commands, &overlay);
+        draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        return;
+    }
+
     // Placing the second endpoint (a portal's exit, or a door's destination), in the
     // room we navigated to.
     if let Some((kind, from_room, from_cell)) = pending.0.clone() {
@@ -490,6 +601,23 @@ fn edit_tiles(
         buffer.defining = Some(buffer.cursor);
         buffer.define_cells = vec![buffer.cursor];
         buffer.status = "trace a stamp: move to draw, G/enter finish, esc cancel".to_string();
+        changed = true;
+    }
+    if keys.just_pressed(KeyCode::KeyP) {
+        // P on an existing moving platform removes it; otherwise it starts authoring one.
+        let here = (buffer.cursor.0 as i32, buffer.cursor.1 as i32);
+        if let Some(idx) = buffer.movers.iter().position(|m| m.tiles.contains(&here)) {
+            buffer.movers.remove(idx);
+            buffer.status = save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
+        } else {
+            buffer.mover_edit = Some(MoverStep::Area);
+            buffer.mover_tiles = vec![buffer.cursor];
+            buffer.mover_path.clear();
+            buffer.mover_mode = MoveMode::Loop;
+            buffer.mover_speed = 60.0;
+            buffer.mover_rest = 500.0;
+            buffer.status = "mover: trace the platform, P/enter next, esc cancels".to_string();
+        }
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyX) {
@@ -663,6 +791,64 @@ fn draw_tiles(
         }
     }
 
+    // Moving platforms: existing movers (faint orange cells + bright stop dots), plus the
+    // platform being authored, its stops, and a preview at the cursor while the tool is open.
+    let mover_box = |commands: &mut Commands, tc: i32, tr: i32, size: f32, color: Color| {
+        if tc >= 0 && tr >= 0 && (tr as usize) < rows && (tc as usize) < cols {
+            let pos = Vec2::new(
+                top_left.x + (tc as f32 + 0.5) * tile,
+                top_left.y - (tr as f32 + 0.5) * tile,
+            );
+            box_at(commands, pos, Vec2::splat(tile * size), 153.0, color);
+        }
+    };
+    for m in &buffer.movers {
+        for &(c, r) in &m.tiles {
+            mover_box(commands, c, r, 0.92, Color::srgba(0.95, 0.55, 0.15, 0.4));
+        }
+        for &(c, r) in &m.path {
+            mover_box(commands, c, r, 0.4, Color::srgba(1.0, 0.65, 0.2, 0.85));
+        }
+    }
+    if let Some(step) = buffer.mover_edit {
+        for (i, &(c, r)) in buffer.mover_tiles.iter().enumerate() {
+            // The first selected cell is the home anchor (drawn hotter).
+            let color = if i == 0 {
+                Color::srgba(1.0, 0.45, 0.1, 0.75)
+            } else {
+                Color::srgba(1.0, 0.85, 0.3, 0.5)
+            };
+            mover_box(commands, c as i32, r as i32, 0.92, color);
+        }
+        for &(c, r) in &buffer.mover_path {
+            mover_box(
+                commands,
+                c as i32,
+                r as i32,
+                0.45,
+                Color::srgba(0.3, 1.0, 0.5, 0.9),
+            );
+        }
+        if step == MoverStep::Path
+            && let Some(&(ax, ay)) = buffer.mover_tiles.first()
+        {
+            // Preview where the platform sits if a stop is dropped at the cursor.
+            let (dx, dy) = (
+                buffer.cursor.0 as i32 - ax as i32,
+                buffer.cursor.1 as i32 - ay as i32,
+            );
+            for &(c, r) in &buffer.mover_tiles {
+                mover_box(
+                    commands,
+                    c as i32 + dx,
+                    r as i32 + dy,
+                    0.8,
+                    Color::srgba(0.4, 0.9, 1.0, 0.3),
+                );
+            }
+        }
+    }
+
     let (cc, cr) = buffer.cursor;
     box_at(
         commands,
@@ -726,32 +912,56 @@ fn draw_tiles(
         dim,
         &buffer.status,
     );
-    let stamp_note = if buffer.stamp.is_empty() {
-        String::new()
+    // The label + two help lines describe the brush — or the mover tool while authoring one.
+    let (label, help1, help2) = if let Some(step) = buffer.mover_edit {
+        let mode = match buffer.mover_mode {
+            MoveMode::Loop => "loop",
+            MoveMode::Once => "once",
+            MoveMode::PingPong => "ping-pong",
+        };
+        match step {
+            MoverStep::Area => (
+                format!(
+                    "MOVING PLATFORM — select area ({} cells)",
+                    buffer.mover_tiles.len()
+                ),
+                "move to trace the platform   |   P / enter: next   |   esc: cancel".to_string(),
+                "the first cell is the home anchor".to_string(),
+            ),
+            MoverStep::Path => (
+                format!(
+                    "MOVING PLATFORM — stops: {}   mode: {mode}   speed: {}   rest: {}ms",
+                    buffer.mover_path.len(),
+                    buffer.mover_speed,
+                    buffer.mover_rest,
+                ),
+                "space: drop a stop   |   P / enter: finish   |   esc: cancel".to_string(),
+                "tab: mode   |   - / = : speed   |   [ ] : rest".to_string(),
+            ),
+        }
     } else {
-        format!("   [stamp: {} cells]", buffer.stamp.len())
+        let stamp_note = if buffer.stamp.is_empty() {
+            String::new()
+        } else {
+            format!("   [stamp: {} cells]", buffer.stamp.len())
+        };
+        (
+            format!("brush: {}{}", BRUSHES[buffer.brush].1, stamp_note),
+            "arrows move  |  space paint  |  X erase  |  tab brush  |  G stamp  |  P platform"
+                .to_string(),
+            "[ ] - =  resize  |  B colour  |  S save  |  M rooms  |  enter rename  |  esc exit"
+                .to_string(),
+        )
     };
     text_at(
         commands,
         center + Vec2::new(0.0, -218.0),
         18.0,
         bright,
-        &format!("brush: {}{}", BRUSHES[buffer.brush].1, stamp_note),
+        &label,
     );
-    text_at(
-        commands,
-        center + Vec2::new(0.0, -241.0),
-        13.0,
-        dim,
-        "arrows move  |  space paint  |  X erase  |  tab brush  |  G stamp  |  enter rename",
-    );
-    text_at(
-        commands,
-        center + Vec2::new(0.0, -259.0),
-        13.0,
-        dim,
-        "[ ] - =  resize   |   B colour   |   S save   |   M rooms   |   esc exit",
-    );
+    text_at(commands, center + Vec2::new(0.0, -241.0), 13.0, dim, &help1);
+    text_at(commands, center + Vec2::new(0.0, -259.0), 13.0, dim, &help2);
 
     // Rename prompt overlays the centre while typing a display name.
     if let Some(text) = &buffer.rename {

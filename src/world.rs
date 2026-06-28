@@ -95,11 +95,12 @@ fn parse_door(v: &ron::Value) -> Result<Door, RonError> {
 }
 
 /// How a [`Mover`] cycles its path once it reaches the last stop.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Default)]
 pub enum MoveMode {
     /// Travel to the last stop and halt there.
     Once,
     /// Cycle home → stops → home → … forever.
+    #[default]
     Loop,
     /// Bounce back and forth along the path.
     PingPong,

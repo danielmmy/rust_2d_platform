@@ -324,8 +324,8 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | `X` | erase | `B` | recolour |
 | `Tab` | cycle brush | `V` / `C` | scenery: pick layer / set |
 | `G` | trace stamp shape | `S` | save |
-| `M` | room manager | `Enter` | rename (type a name) |
-| `Esc` | leave the builder | | |
+| `P` | moving platform / delete one | `M` | room manager |
+| `Enter` | rename (type a name) | `Esc` | leave the builder |
 | `Space` (Portal/Door brush) | start a portal / door link | | |
 
 **Rooms** (`M`) — manage the world as a grid:
@@ -375,6 +375,16 @@ it — anchored at the cursor, so you stamp it wherever you like. The footprint 
 cyan as you move; `Tab` picks the fill item (or Erase) as usual. Trace a single cell again
 to go back to normal one-cell painting. The shape lives in the editor only (not saved).
 
+**Moving platforms** — paint the tiles you want to move (a strip of `#`, a spike, a bench,
+…), then press **`P`** to author a [mover](src/movers.rs). It runs in two steps, like the
+stamp: **(1) Select the area** — move the cursor to trace the platform's cells (the **first
+cell is the home anchor**, drawn hotter); `P`/`enter` advances. **(2) Mark the stops** —
+move the cursor and press **`space`** at each point the platform should travel to; a cyan
+preview shows where it'll sit. While marking, `Tab` cycles the **mode** (loop / once /
+ping-pong), `-`/`=` change **speed**, and `[`/`]` change the **pause** at each stop;
+`P`/`enter` finishes (writing it into the room's `movers`), `esc` cancels. Existing movers
+show as orange cells with bright stop dots — press **`P`** on one to delete it.
+
 ### Replace the art
 
 The shipped sprites and Story levels are **baked into the binary** at build time (see
@@ -423,6 +433,13 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — The level builder can now **author moving platforms**
+  ([`editor`](src/editor.rs)). Press **`P`** to (1) trace the platform's cells (first cell =
+  home anchor) and (2) mark the stop points it travels through (`space`), tuning **mode**
+  (`Tab`: loop / once / ping-pong), **speed** (`-`/`=`) and **pause** (`[`/`]`) live, with a
+  cyan preview of each stop. Writes a [`Mover`](src/world.rs) into the room's `movers`;
+  existing movers draw as orange cells + stop dots, and `P` on one deletes it. (Movers were
+  previously only hand-edited in the `.map.ron` files.)
 - **2026-06-28** — Added a **multigrid stamp brush** to the level builder
   ([`editor`](src/editor.rs)). Press **`G`** to **trace a shape** by moving the cursor (each
   cell visited is marked, in amber), `G`/`enter` to finish; then `space` paints **the whole
