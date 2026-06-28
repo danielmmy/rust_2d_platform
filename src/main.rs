@@ -88,12 +88,13 @@ fn main() {
             GameSet::Camera,
         )
             .chain()
-            // Frozen while the world map, the pause menu, or the character screen is open.
+            // Frozen while the world map, pause menu, character screen, or ability menu is open.
             .run_if(
                 in_state(GameState::Playing)
                     .and_then(in_state(MapView::Closed))
                     .and_then(in_state(Paused::Running))
-                    .and_then(in_state(CharMenu::Closed)),
+                    .and_then(in_state(CharMenu::Closed))
+                    .and_then(in_state(stats::AbilityMenu::Closed)),
             ),
     )
     .add_plugins((

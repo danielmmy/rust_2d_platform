@@ -21,7 +21,7 @@ use crate::combat::{Energy, LostEnergy};
 use crate::health::Health;
 use crate::menu::Paused;
 use crate::player::{Abilities, Ability};
-use crate::save::{self, Save};
+use crate::save::{self, GameMode, Save};
 use crate::state::GameState;
 use crate::world::{CurrentRoom, Entry, LoadMap};
 use crate::worldmap::MapView;
@@ -177,17 +177,20 @@ impl Plugin for StatsPlugin {
             .init_resource::<CharCursor>()
             .init_resource::<OverlayMode>()
             .init_resource::<BenchAt>()
+            .init_resource::<AbilityCursor>()
             .init_state::<CharMenu>()
+            .init_state::<AbilityMenu>()
             .add_message::<Died>()
             .add_systems(OnEnter(GameState::Playing), apply_save_to_session)
             .add_systems(Update, on_player_death.run_if(in_state(GameState::Playing)))
             .add_systems(
                 Update,
-                toggle_char_menu.run_if(
+                (toggle_char_menu, toggle_ability_menu).run_if(
                     in_state(GameState::Playing)
                         .and_then(in_state(MapView::Closed))
                         .and_then(in_state(Paused::Running))
-                        .and_then(in_state(CharMenu::Closed)),
+                        .and_then(in_state(CharMenu::Closed))
+                        .and_then(in_state(AbilityMenu::Closed)),
                 ),
             )
             .add_systems(OnEnter(CharMenu::Open), open_overlay)
@@ -195,6 +198,12 @@ impl Plugin for StatsPlugin {
             .add_systems(
                 Update,
                 (update_overlay, refresh_ability_list).run_if(in_state(CharMenu::Open)),
+            )
+            .add_systems(OnEnter(AbilityMenu::Open), open_ability_overlay)
+            .add_systems(OnExit(AbilityMenu::Open), despawn_ability_overlay)
+            .add_systems(
+                Update,
+                update_ability_overlay.run_if(in_state(AbilityMenu::Open)),
             );
     }
 }
@@ -578,5 +587,193 @@ fn option_color(choice: Choice, selected: bool, stats: &Stats, energy: &Energy) 
         Color::srgb(1.0, 0.85, 0.3)
     } else {
         Color::srgb(0.62, 0.64, 0.72)
+    }
+}
+
+// --- ability menu (B) ----------------------------------------------------
+//
+// A toggle menu opened with `B` during play. In a **Builder** save it lists *all* abilities
+// and grants/removes them (for testing — persisted). In a **Story** save it lists only the
+// **acquired** abilities and toggles them active on/off (you can't grant unearned ones).
+
+/// Whether the ability menu is open. Gameplay freezes while it is (see `main`).
+#[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AbilityMenu {
+    #[default]
+    Closed,
+    Open,
+}
+
+#[derive(Resource, Default)]
+struct AbilityCursor(usize);
+
+/// Tags every entity of the ability overlay.
+#[derive(Component)]
+struct AbilityEntity;
+
+/// A selectable ability row (carries the ability it toggles).
+#[derive(Component)]
+struct AbilityRow(Ability);
+
+/// Which abilities the menu lists: all of them in a Builder save, else just the acquired ones.
+fn menu_abilities(builder: bool, save: &Save) -> Vec<Ability> {
+    if builder {
+        Ability::ALL.to_vec()
+    } else {
+        let have = Abilities::from_csv(&save.abilities);
+        Ability::ALL.into_iter().filter(|a| have.has(*a)).collect()
+    }
+}
+
+fn toggle_ability_menu(
+    keys: Res<ButtonInput<KeyCode>>,
+    gamepads: Query<&Gamepad>,
+    mut next: ResMut<NextState<AbilityMenu>>,
+) {
+    let pressed = keys.just_pressed(KeyCode::KeyB)
+        || gamepads
+            .iter()
+            .any(|g| g.just_pressed(GamepadButton::RightThumb));
+    if pressed {
+        next.set(AbilityMenu::Open);
+    }
+}
+
+fn open_ability_overlay(
+    mut commands: Commands,
+    save: Res<Save>,
+    mut cursor: ResMut<AbilityCursor>,
+    camera: Query<&Transform, With<Camera2d>>,
+) {
+    cursor.0 = 0;
+    let center = camera
+        .single()
+        .map(|t| t.translation.truncate())
+        .unwrap_or(Vec2::ZERO);
+    let builder = save.mode == GameMode::Builder;
+    let rows = menu_abilities(builder, &save);
+
+    commands.spawn((
+        AbilityEntity,
+        Sprite {
+            color: Color::srgba(0.03, 0.03, 0.06, 0.97),
+            custom_size: Some(Vec2::new(960.0, 540.0)),
+            ..default()
+        },
+        Transform::from_xyz(center.x, center.y, 200.0),
+    ));
+    spawn_ability_text(&mut commands, center, 150.0, 32.0, "ABILITIES", None);
+    if rows.is_empty() {
+        spawn_ability_text(&mut commands, center, 40.0, 20.0, "none acquired yet", None);
+    } else {
+        for (i, ability) in rows.iter().enumerate() {
+            spawn_ability_text(
+                &mut commands,
+                center,
+                80.0 - i as f32 * 38.0,
+                24.0,
+                "",
+                Some(*ability),
+            );
+        }
+    }
+    let hint = if builder {
+        "[Up/Down] select   [Enter] grant / remove   [B/Esc] close"
+    } else {
+        "[Up/Down] select   [Enter] toggle on/off   [B/Esc] close"
+    };
+    spawn_ability_text(&mut commands, center, -150.0, 16.0, hint, None);
+}
+
+fn spawn_ability_text(
+    commands: &mut Commands,
+    center: Vec2,
+    dy: f32,
+    size: f32,
+    text: &str,
+    row: Option<Ability>,
+) {
+    let mut entity = commands.spawn((
+        AbilityEntity,
+        Text2d::new(text.to_string()),
+        TextFont {
+            font_size: FontSize::Px(size),
+            ..default()
+        },
+        TextColor(Color::srgb(0.8, 0.82, 0.9)),
+        Transform::from_xyz(center.x, center.y + dy, 201.0),
+    ));
+    if let Some(ability) = row {
+        entity.insert(AbilityRow(ability));
+    }
+}
+
+fn despawn_ability_overlay(mut commands: Commands, items: Query<Entity, With<AbilityEntity>>) {
+    for entity in &items {
+        commands.entity(entity).despawn();
+    }
+}
+
+fn update_ability_overlay(
+    keys: Res<ButtonInput<KeyCode>>,
+    gamepads: Query<&Gamepad>,
+    mut save: ResMut<Save>,
+    mut abilities: ResMut<Abilities>,
+    mut cursor: ResMut<AbilityCursor>,
+    mut next: ResMut<NextState<AbilityMenu>>,
+    mut rows_q: Query<(&AbilityRow, &mut Text2d, &mut TextColor)>,
+) {
+    let builder = save.mode == GameMode::Builder;
+    let rows = menu_abilities(builder, &save);
+
+    let up = keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::KeyW])
+        || gamepads
+            .iter()
+            .any(|g| g.just_pressed(GamepadButton::DPadUp));
+    let down = keys.any_just_pressed([KeyCode::ArrowDown, KeyCode::KeyS])
+        || gamepads
+            .iter()
+            .any(|g| g.just_pressed(GamepadButton::DPadDown));
+    let confirm = keys.any_just_pressed([KeyCode::Enter, KeyCode::Space, KeyCode::KeyZ])
+        || gamepads
+            .iter()
+            .any(|g| g.just_pressed(GamepadButton::South));
+    let close = keys.any_just_pressed([KeyCode::KeyB, KeyCode::Escape])
+        || gamepads.iter().any(|g| {
+            g.just_pressed(GamepadButton::RightThumb) || g.just_pressed(GamepadButton::East)
+        });
+
+    if close {
+        next.set(AbilityMenu::Closed);
+        return;
+    }
+    if rows.is_empty() {
+        return;
+    }
+
+    let delta = i32::from(down) - i32::from(up);
+    if delta != 0 {
+        cursor.0 = (cursor.0 as i32 + delta).rem_euclid(rows.len() as i32) as usize;
+    }
+    if confirm {
+        let ability = rows[cursor.0];
+        let on = !abilities.has(ability);
+        abilities.set(ability, on);
+        // Builder grants/removes (persisted); Story only flips the live "active" state of an
+        // already-acquired ability, so the save's acquired set is untouched.
+        if builder {
+            save.abilities = abilities.to_csv();
+            save::write_save(&save);
+        }
+    }
+    for (row, mut text, mut color) in &mut rows_q {
+        let on = abilities.has(row.0);
+        text.0 = format!("{} {}", if on { "[x]" } else { "[ ]" }, row.0.label());
+        let selected = rows.get(cursor.0) == Some(&row.0);
+        *color = TextColor(if selected {
+            Color::srgb(1.0, 0.9, 0.5)
+        } else {
+            Color::srgb(0.8, 0.82, 0.9)
+        });
     }
 }
