@@ -52,6 +52,14 @@ pub struct JumpState {
     wall_lock: f32,
     /// Countdown to the next footstep sound while walking on the ground.
     step_timer: f32,
+    /// Seconds left in the current dash (0 = not dashing).
+    dash: f32,
+    /// Seconds until another dash is allowed.
+    dash_cd: f32,
+    /// Travel direction of the active dash (-1 / +1).
+    dash_dir: f32,
+    /// An unused mid-air dash is available (refreshed on landing).
+    air_dash: bool,
 }
 
 impl JumpState {
@@ -69,11 +77,109 @@ impl JumpState {
     }
 }
 
-/// Unlockable player abilities (persisted in the [`Save`]).
-#[derive(Resource, Default)]
+/// One acquirable traversal/combat ability. A fresh game has **none** of these (only the
+/// base single jump + slash); each is granted by a boss or a chest the level designer places.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Ability {
+    /// A second jump in mid-air.
+    #[default]
+    DoubleJump,
+    /// Cling to walls and jump off them.
+    WallJump,
+    /// A quick horizontal burst.
+    Dash,
+    /// Bounce off enemies/hazards with a down-slash.
+    Pogo,
+}
+
+impl Ability {
+    /// All abilities, in display order.
+    pub const ALL: [Ability; 4] = [
+        Ability::DoubleJump,
+        Ability::WallJump,
+        Ability::Dash,
+        Ability::Pogo,
+    ];
+
+    /// The stable key used in save files and map data.
+    pub fn key(self) -> &'static str {
+        match self {
+            Ability::DoubleJump => "double_jump",
+            Ability::WallJump => "wall_jump",
+            Ability::Dash => "dash",
+            Ability::Pogo => "pogo",
+        }
+    }
+
+    /// A human-friendly name for menus.
+    pub fn label(self) -> &'static str {
+        match self {
+            Ability::DoubleJump => "Double Jump",
+            Ability::WallJump => "Wall Jump",
+            Ability::Dash => "Dash",
+            Ability::Pogo => "Pogo",
+        }
+    }
+
+    /// Parse a [`key`](Ability::key).
+    pub fn parse(s: &str) -> Option<Ability> {
+        Ability::ALL.into_iter().find(|a| a.key() == s)
+    }
+}
+
+/// Which abilities the player has unlocked (persisted in the [`Save`]). All false on a new
+/// game; granted by bosses / chests (see [`crate::boss`], [`crate::world`]).
+#[derive(Resource, Default, Clone, Copy)]
 pub struct Abilities {
-    /// A second jump in mid-air — the reward for beating the boss.
     pub double_jump: bool,
+    pub wall_jump: bool,
+    pub dash: bool,
+    pub pogo: bool,
+}
+
+impl Abilities {
+    pub fn has(&self, a: Ability) -> bool {
+        match a {
+            Ability::DoubleJump => self.double_jump,
+            Ability::WallJump => self.wall_jump,
+            Ability::Dash => self.dash,
+            Ability::Pogo => self.pogo,
+        }
+    }
+
+    pub fn grant(&mut self, a: Ability) {
+        self.set(a, true);
+    }
+
+    pub fn set(&mut self, a: Ability, on: bool) {
+        match a {
+            Ability::DoubleJump => self.double_jump = on,
+            Ability::WallJump => self.wall_jump = on,
+            Ability::Dash => self.dash = on,
+            Ability::Pogo => self.pogo = on,
+        }
+    }
+
+    /// Build from a comma-separated list of [`Ability::key`]s (a save field).
+    pub fn from_csv(s: &str) -> Abilities {
+        let mut out = Abilities::default();
+        for token in s.split(',') {
+            if let Some(a) = Ability::parse(token.trim()) {
+                out.grant(a);
+            }
+        }
+        out
+    }
+
+    /// Serialise to the comma-separated save form.
+    pub fn to_csv(self) -> String {
+        Ability::ALL
+            .iter()
+            .filter(|a| self.has(**a))
+            .map(|a| a.key())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 /// Every knob that shapes how movement feels. Tweak and re-run to taste.
@@ -97,6 +203,10 @@ pub struct MovementConfig {
     pub wall_jump_x: f32,
     /// Seconds of reduced horizontal control right after a wall jump.
     pub wall_jump_lock: f32,
+    /// Dash burst speed, duration, and cooldown.
+    pub dash_speed: f32,
+    pub dash_time: f32,
+    pub dash_cd: f32,
 }
 
 impl Default for MovementConfig {
@@ -117,6 +227,9 @@ impl Default for MovementConfig {
             wall_slide_speed: 120.0,
             wall_jump_x: 250.0,
             wall_jump_lock: 0.16,
+            dash_speed: 560.0,
+            dash_time: 0.16,
+            dash_cd: 0.45,
         }
     }
 }
@@ -134,7 +247,7 @@ impl Plugin for PlayerPlugin {
 
 /// Push the save's unlocked abilities into the live resource on entering play.
 fn apply_abilities(save: Res<Save>, mut abilities: ResMut<Abilities>) {
-    abilities.double_jump = save.double_jump;
+    *abilities = Abilities::from_csv(&save.abilities);
 }
 
 fn approach(current: f32, target: f32, max_delta: f32) -> f32 {
@@ -172,12 +285,41 @@ pub(crate) fn movement(
         let locked = jump.wall_lock > 0.0;
         jump.wall_lock = (jump.wall_lock - dt).max(0.0);
 
-        if !stunned {
+        // --- dash: a quick horizontal burst once unlocked; air-dash refreshes on landing ---
+        jump.dash = (jump.dash - dt).max(0.0);
+        jump.dash_cd = (jump.dash_cd - dt).max(0.0);
+        if jump.grounded {
+            jump.air_dash = true;
+        }
+        if intent.dash_pressed
+            && abilities.dash
+            && !stunned
+            && jump.dash <= 0.0
+            && jump.dash_cd <= 0.0
+            && (jump.grounded || jump.air_dash)
+        {
+            jump.dash = cfg.dash_time;
+            jump.dash_cd = cfg.dash_cd;
+            jump.dash_dir = if intent.move_x.abs() > 0.1 {
+                intent.move_x.signum()
+            } else if sprite.flip_x {
+                -1.0
+            } else {
+                1.0
+            };
+            if !jump.grounded {
+                jump.air_dash = false;
+            }
+            sfx.write(PlaySfx(Sfx::Dash));
+        }
+        let dashing = jump.dash > 0.0;
+
+        if !stunned && !dashing {
             // --- wall cling (Hollow-Knight style): grab automatically on contact while
             // airborne; let go by pressing *away* from the wall (or off the ground). ---
             let here = transform.translation.truncate();
-            let wall_dir = if jump.grounded {
-                0.0
+            let wall_dir = if jump.grounded || !abilities.wall_jump {
+                0.0 // wall slide/jump must be unlocked first
             } else if intent.move_x > -0.1
                 && physics::wall_at(&solids, &platforms, here, PLAYER_HALF, 1.0)
             {
@@ -266,21 +408,28 @@ pub(crate) fn movement(
             jump.wall = 0.0;
         }
 
-        // --- gravity (asymmetric + apex control) ---
-        let gravity = if velocity.0.y > 0.0 {
-            if velocity.0.y < cfg.apex_speed {
-                cfg.gravity_up * cfg.apex_gravity_mult
-            } else {
-                cfg.gravity_up
-            }
+        if dashing {
+            // A flat horizontal zip: fixed speed, no gravity, no steering.
+            velocity.0.x = jump.dash_dir * cfg.dash_speed;
+            velocity.0.y = 0.0;
+            sprite.flip_x = jump.dash_dir < 0.0;
         } else {
-            cfg.gravity_down
-        };
-        velocity.0.y = (velocity.0.y - gravity * dt).max(-cfg.max_fall);
+            // --- gravity (asymmetric + apex control) ---
+            let gravity = if velocity.0.y > 0.0 {
+                if velocity.0.y < cfg.apex_speed {
+                    cfg.gravity_up * cfg.apex_gravity_mult
+                } else {
+                    cfg.gravity_up
+                }
+            } else {
+                cfg.gravity_down
+            };
+            velocity.0.y = (velocity.0.y - gravity * dt).max(-cfg.max_fall);
 
-        // --- wall slide: cap the fall speed while clinging ---
-        if jump.wall != 0.0 && velocity.0.y < -cfg.wall_slide_speed {
-            velocity.0.y = -cfg.wall_slide_speed;
+            // --- wall slide: cap the fall speed while clinging ---
+            if jump.wall != 0.0 && velocity.0.y < -cfg.wall_slide_speed {
+                velocity.0.y = -cfg.wall_slide_speed;
+            }
         }
 
         // --- integrate + collide (X then Y), against the static grid then any moving

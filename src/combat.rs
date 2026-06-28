@@ -21,7 +21,7 @@ use crate::boss::{BOSS_HALF, Boss, BossFight};
 use crate::hazards::Hazard;
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
-use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
+use crate::player::{Abilities, JumpState, PLAYER_HALF, Player, Velocity};
 use crate::save::Save;
 use crate::state::GameState;
 use crate::stats::{self, Stats};
@@ -520,6 +520,7 @@ fn player_attack(
     fight: Res<BossFight>,
     mut sword: ResMut<Sword>,
     mut grace: ResMut<PogoGrace>,
+    abilities: Res<Abilities>,
     mut commands: Commands,
     mut sfx: MessageWriter<PlaySfx>,
     mut player: Query<(&Transform, &Sprite, &mut Velocity, &mut JumpState), With<Player>>,
@@ -554,7 +555,7 @@ fn player_attack(
         sword.combo_window = SWING_COOLDOWN + COMBO_GRACE;
         sword.active = SWING_ACTIVE;
         sword.dir = if sprite.flip_x { -1.0 } else { 1.0 };
-        sword.down = intent.down && !jump.grounded();
+        sword.down = intent.down && !jump.grounded() && abilities.pogo;
         sword.pogoed = false;
         sword.hit.clear();
         // A heftier sound on the third hit (the combo finisher).

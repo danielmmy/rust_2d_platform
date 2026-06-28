@@ -22,6 +22,8 @@ pub struct PlayerIntent {
     pub interact: bool,
     /// Attack was pressed this frame (edge) — swings the sword.
     pub attack_pressed: bool,
+    /// Dash was pressed this frame (edge) — a quick horizontal burst (if unlocked).
+    pub dash_pressed: bool,
 }
 
 pub struct InputPlugin;
@@ -55,6 +57,7 @@ fn gather(
     let mut jump_held = keys.any_pressed(JUMP_KEYS);
     let mut interact = keys.just_pressed(KeyCode::KeyE);
     let mut attack = keys.just_pressed(KeyCode::KeyJ);
+    let mut dash = keys.any_just_pressed([KeyCode::ShiftLeft, KeyCode::KeyL]);
 
     for gamepad in &gamepads {
         let stick = gamepad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
@@ -86,6 +89,9 @@ fn gather(
         if gamepad.just_pressed(GamepadButton::West) {
             attack = true;
         }
+        if gamepad.just_pressed(GamepadButton::RightTrigger) {
+            dash = true;
+        }
     }
 
     intent.move_x = move_x.clamp(-1.0, 1.0);
@@ -95,4 +101,5 @@ fn gather(
     intent.jump_held = jump_held;
     intent.interact = interact;
     intent.attack_pressed = attack;
+    intent.dash_pressed = dash;
 }

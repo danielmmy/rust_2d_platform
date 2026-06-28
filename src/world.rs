@@ -11,11 +11,12 @@
 //! the other way across.) The camera is bounded to the current room
 //! ([`crate::camera`]), so each room reads as its own space.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, LoadContext};
+use bevy::ecs::system::SystemParam;
 use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
 use bevy::prelude::*;
 
@@ -25,8 +26,9 @@ use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
 use crate::input::PlayerIntent;
 use crate::physics::{Solids, TILE};
-use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
+use crate::player::{Abilities, Ability, JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
+use crate::save::Save;
 use crate::state::GameState;
 use crate::stats::{BenchAt, CharMenu, OverlayMode};
 
@@ -56,6 +58,20 @@ pub struct EnemySpawn {
     pub kind: usize,
     pub col: i32,
     pub row: i32,
+}
+
+/// A treasure **chest** at cell `(col, row)` that grants `ability` when touched (then stays
+/// collected — see [`crate::save::Save::chests`]). Coordinate-based, like teleport pads.
+#[derive(Clone)]
+pub struct Chest {
+    pub col: i32,
+    pub row: i32,
+    pub ability: Ability,
+}
+
+/// Unique id for a chest, used to remember it's been collected (`"room@col,row"`).
+fn chest_id(room: &str, col: i32, row: i32) -> String {
+    format!("{room}@{col},{row}")
 }
 
 /// A one-way passage out of a room. Walking off the edge nearest `origin` loads room
@@ -239,6 +255,11 @@ pub struct MapData {
     /// Background-music track for this room: a name under `assets/music/` (one of the 12
     /// theme sets), or empty for silence. Played looping by [`crate::audio`].
     pub music: String,
+    /// The ability this room's boss grants on defeat (empty = none / energy only). See
+    /// [`Ability::key`](crate::player::Ability::key).
+    pub boss_reward: String,
+    /// Treasure chests in this room (each grants an ability when touched).
+    pub chests: Vec<Chest>,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -285,6 +306,22 @@ impl MapData {
                         to: t.field("to")?.as_str()?.to_string(),
                         dest_col: t.field("dest_col")?.as_i32()?,
                         dest_row: t.field("dest_row")?.as_i32()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, RonError>>()?,
+            None => Vec::new(),
+        };
+
+        let chests = match value.try_field("chests") {
+            Some(list) => list
+                .as_list()?
+                .iter()
+                .map(|c| {
+                    Ok(Chest {
+                        col: c.field("col")?.as_i32()?,
+                        row: c.field("row")?.as_i32()?,
+                        ability: Ability::parse(c.field("ability")?.as_str()?)
+                            .ok_or_else(|| RonError("unknown chest ability".into()))?,
                     })
                 })
                 .collect::<Result<Vec<_>, RonError>>()?,
@@ -369,6 +406,12 @@ impl MapData {
                 .and_then(|v| v.as_str().ok())
                 .unwrap_or("")
                 .to_string(),
+            boss_reward: value
+                .try_field("boss_reward")
+                .and_then(|v| v.as_str().ok())
+                .unwrap_or("")
+                .to_string(),
+            chests,
             bg,
             tiles,
         })
@@ -411,6 +454,18 @@ impl MapData {
                 format!(
                     "        (kind: {}, col: {}, row: {}),\n",
                     e.kind, e.col, e.row
+                )
+            })
+            .collect();
+        let chests: String = self
+            .chests
+            .iter()
+            .map(|c| {
+                format!(
+                    "        (col: {}, row: {}, ability: \"{}\"),\n",
+                    c.col,
+                    c.row,
+                    c.ability.key()
                 )
             })
             .collect();
@@ -472,10 +527,11 @@ impl MapData {
              north: [\n{north}    ],\n    south: [\n{south}    ],\n    \
              east: [\n{east}    ],\n    west: [\n{west}    ],\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
+             chests: [\n{chests}    ],\n    \
              fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
              movers: [\n{movers}    ],\n    \
              scenery: (far: \"{}\", mid: \"{}\", near: \"{}\", fg: \"{}\"),\n    \
-             music: \"{}\",\n    \
+             music: \"{}\",\n    boss_reward: \"{}\",\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
@@ -487,6 +543,7 @@ impl MapData {
             self.scenery.near,
             self.scenery.fg,
             self.music,
+            self.boss_reward,
             self.bg[0],
             self.bg[1],
             self.bg[2],
@@ -560,6 +617,69 @@ pub(crate) struct Teleporter {
     dest: (i32, i32),
 }
 
+/// The three "already-handled" sets, bundled so [`handle_load_map`] stays under Bevy's
+/// system-parameter limit.
+#[derive(SystemParam)]
+struct ClearedSets<'w> {
+    bosses: Res<'w, crate::boss::ClearedBosses>,
+    arenas: Res<'w, crate::boss::ClearedArenas>,
+    chests: Res<'w, ClearedChests>,
+}
+
+/// Chests already collected this game (`"room@col,row"`), persisted in the save so they
+/// stay opened on revisit.
+#[derive(Resource, Default)]
+pub(crate) struct ClearedChests(pub(crate) HashSet<String>);
+
+/// A live, uncollected chest: the ability it grants and its persistent id.
+#[derive(Component)]
+struct ChestItem {
+    ability: Ability,
+    id: String,
+}
+
+/// Half-extents of a chest's pickup box.
+const CHEST_HALF: Vec2 = Vec2::new(14.0, 12.0);
+
+/// Seed the collected-chest set from the save when a game starts.
+fn apply_chest_save(save: Res<Save>, mut chests: ResMut<ClearedChests>) {
+    chests.0 = save
+        .chests
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+}
+
+/// Touching a chest grants its ability: bank it (persisted immediately so death can't undo
+/// it), mark the chest collected, open it (despawn), and play the reward jingle.
+fn chest_pickup(
+    mut commands: Commands,
+    mut abilities: ResMut<Abilities>,
+    mut collected: ResMut<ClearedChests>,
+    mut save: ResMut<Save>,
+    mut sfx: MessageWriter<crate::audio::PlaySfx>,
+    player: Query<&Transform, With<Player>>,
+    chests: Query<(Entity, &Transform, &ChestItem)>,
+) {
+    let Ok(player_tf) = player.single() else {
+        return;
+    };
+    let player_pos = player_tf.translation.truncate();
+    for (entity, tf, chest) in &chests {
+        let delta = (tf.translation.truncate() - player_pos).abs();
+        if delta.x < CHEST_HALF.x + PLAYER_HALF.x && delta.y < CHEST_HALF.y + PLAYER_HALF.y {
+            abilities.grant(chest.ability);
+            save.abilities = abilities.to_csv();
+            collected.0.insert(chest.id.clone());
+            save.chests = collected.0.iter().cloned().collect::<Vec<_>>().join(",");
+            crate::save::write_save(&save);
+            sfx.write(crate::audio::PlaySfx(crate::audio::Sfx::Save));
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 /// Whether teleporters are ready to fire. Disarmed on each teleport, on every room
 /// load, and when the player respawns from damage (so respawning onto a pad can't
 /// chain), and only re-armed once the player is [`TELEPORT_REARM`] from every pad.
@@ -630,6 +750,7 @@ pub(crate) struct GameAssets {
     pub(crate) orb: Handle<Image>,
     pub(crate) slash: Handle<Image>,
     pub(crate) boss: Handle<Image>,
+    pub(crate) chest: Handle<Image>,
     /// Parallax scenery layers by file name (e.g. `"forest_meadow_far.png"`).
     pub(crate) scenery: HashMap<String, Handle<Image>>,
 }
@@ -641,6 +762,8 @@ pub(crate) struct CurrentRoom {
     /// The room's background-music track name (see [`MapData::music`]); read by
     /// [`crate::audio`] to play/switch the loop. Empty = silence.
     pub(crate) music: String,
+    /// The ability this room's boss grants on defeat (see [`MapData::boss_reward`]).
+    pub(crate) reward: Option<Ability>,
     north: Vec<Door>,
     south: Vec<Door>,
     east: Vec<Door>,
@@ -750,12 +873,13 @@ impl Plugin for WorldPlugin {
             .init_resource::<TeleportArmed>()
             .init_resource::<PendingSpawn>()
             .init_resource::<LevelRoot>()
+            .init_resource::<ClearedChests>()
             .add_systems(Startup, load_assets)
             .add_systems(OnEnter(GameState::Loading), load_world)
             .add_systems(Update, wait_for_load.run_if(in_state(GameState::Loading)))
             .add_systems(
                 OnEnter(GameState::Playing),
-                (enter_playing, spawn_bench_prompt),
+                (enter_playing, spawn_bench_prompt, apply_chest_save),
             )
             .add_systems(OnExit(GameState::Playing), despawn_bench_prompt)
             .add_systems(
@@ -767,6 +891,7 @@ impl Plugin for WorldPlugin {
                     detect_transitions.in_set(GameSet::Transitions),
                     detect_teleport.in_set(GameSet::Transitions),
                     bench_interact.in_set(GameSet::Transitions),
+                    chest_pickup.in_set(GameSet::Transitions),
                 )
                     .run_if(in_state(GameState::Playing)),
             );
@@ -816,6 +941,7 @@ fn load_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         orb: embedded_sprite(&mut images, "orb.png"),
         slash: embedded_sprite(&mut images, "slash.png"),
         boss: embedded_sprite(&mut images, "boss.png"),
+        chest: embedded_sprite(&mut images, "chest.png"),
         scenery: EMBEDDED_SCENERY
             .iter()
             .map(|(name, bytes)| (name.to_string(), decode_png(&mut images, name, bytes)))
@@ -1068,8 +1194,7 @@ fn handle_load_map(
     mut respawn: ResMut<RespawnPoint>,
     mut armed: ResMut<TeleportArmed>,
     lost: Res<LostEnergy>,
-    cleared_bosses: Res<crate::boss::ClearedBosses>,
-    cleared_arenas: Res<crate::boss::ClearedArenas>,
+    cleared: ClearedSets,
     mut boss_fight: ResMut<crate::boss::BossFight>,
     existing: Query<Entity, With<MapEntity>>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
@@ -1103,7 +1228,7 @@ fn handle_load_map(
     let mut start_pos = Vec2::new(2.0 * TILE, 2.0 * TILE);
     // An arena arms on entry unless it's already cleared — permanently (a beaten boss)
     // or just for this checkpoint (any arena, until the next bench rest).
-    let is_cleared = cleared_bosses.0.contains(&load.map) || cleared_arenas.0.contains(&load.map);
+    let is_cleared = cleared.bosses.0.contains(&load.map) || cleared.arenas.0.contains(&load.map);
     let arena_armed = !map.fog_wall.is_empty() && !is_cleared;
 
     // Movers pick up whatever entity is authored at their cells (a solid, spike, bench,
@@ -1170,6 +1295,28 @@ fn handle_load_map(
 
     // Parallax scenery layers for this room (despawned with the room as MapEntity).
     crate::scenery::spawn_scenery(&mut commands, &assets, &map.scenery);
+
+    // Treasure chests: spawn the ones not yet collected (each grants an ability on touch).
+    for chest in &map.chests {
+        let id = chest_id(&load.map, chest.col, chest.row);
+        if cleared.chests.0.contains(&id) {
+            continue;
+        }
+        let pos = to_world(chest.col, chest.row);
+        commands.spawn((
+            MapEntity,
+            ChestItem {
+                ability: chest.ability,
+                id,
+            },
+            Sprite {
+                image: assets.chest.clone(),
+                custom_size: Some(Vec2::splat(TILE * 0.9)),
+                ..default()
+            },
+            Transform::from_xyz(pos.x, pos.y, 4.0),
+        ));
+    }
 
     // Teleporter pads are pure data (no grid glyph) — spawn one per portal at its
     // origin cell, flipping the row so y points up.
@@ -1254,6 +1401,7 @@ fn handle_load_map(
     *current = CurrentRoom {
         name: load.map.clone(),
         music: map.music.clone(),
+        reward: Ability::parse(&map.boss_reward),
         north: map.north.clone(),
         south: map.south.clone(),
         east: map.east.clone(),
@@ -1647,6 +1795,11 @@ mod tests {
                 col: 2,
                 row: 2,
             }],
+            chests: vec![Chest {
+                col: 3,
+                row: 1,
+                ability: Ability::Dash,
+            }],
             fog_wall: vec![ArenaSpawn {
                 boss: true,
                 kind: 0,
@@ -1668,6 +1821,7 @@ mod tests {
                 fg: "misty_swamp".to_string(),
             },
             music: "deep_caves".to_string(),
+            boss_reward: "wall_jump".to_string(),
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
@@ -1719,5 +1873,9 @@ mod tests {
         assert_eq!(parsed.scenery.near, "forest_meadow");
         assert_eq!(parsed.scenery.fg, "misty_swamp");
         assert_eq!(parsed.music, "deep_caves");
+        assert_eq!(parsed.boss_reward, "wall_jump");
+        assert_eq!(parsed.chests.len(), 1);
+        assert_eq!((parsed.chests[0].col, parsed.chests[0].row), (3, 1));
+        assert!(parsed.chests[0].ability == Ability::Dash);
     }
 }

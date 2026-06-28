@@ -27,12 +27,13 @@ use bevy::prelude::*;
 
 use crate::hazards::RockSprite;
 use crate::menu::Paused;
+use crate::player::Ability;
 use crate::save::{GameMode, Save};
 use crate::scenery;
 use crate::state::GameState;
 use crate::world::{
-    ArenaSpawn, BENCH_GLYPH, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
-    LevelRoot, MapData, MoveMode, Mover, START_MARKER, Scenery, Teleport, map_fs_path,
+    ArenaSpawn, BENCH_GLYPH, Chest, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH,
+    GameAssets, LevelRoot, MapData, MoveMode, Mover, START_MARKER, Scenery, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -42,9 +43,12 @@ const PORTAL_BRUSH: char = 'P';
 /// Sentinel for the door brush — like the portal brush, but creates an **edge door**
 /// (walk off the room edge to the linked room) instead of a teleporter pad.
 const DOOR_BRUSH: char = 'D';
+/// Sentinel for the chest brush — places a treasure chest (coordinate data) granting the
+/// buffer's `chest_ability`; `K` cycles which ability.
+const CHEST_BRUSH: char = 'K';
 
 /// The paint brushes, by the grid character they write.
-const BRUSHES: [(char, &str); 10] = [
+const BRUSHES: [(char, &str); 11] = [
     ('#', "Wall"),
     ('^', "Spike"),
     ('R', "Rock"),
@@ -54,6 +58,7 @@ const BRUSHES: [(char, &str); 10] = [
     (FOG_GLYPH, "Fog"),
     (PORTAL_BRUSH, "Portal"),
     (DOOR_BRUSH, "Door"),
+    (CHEST_BRUSH, "Chest"),
     ('.', "Erase"),
 ];
 
@@ -114,6 +119,10 @@ struct EditBuffer {
     scenery: Scenery,         // per-layer parallax scenery (V picks layer, C picks set)
     scenery_slot: usize,      // which scenery layer the `C` key cycles (0=far..3=fg)
     music: String,            // background-music track name (N cycles it; "" = none)
+    boss_reward: String,      // ability this room's boss grants (O-key cycles; "" = none)
+    chests: Vec<Chest>,       // treasure chests placed in this room (Chest brush)
+    chest_ability: Ability,   // which ability the Chest brush places (K cycles)
+    ability_menu: Option<usize>, // Some(cursor) while the Y ability-toggle menu is open
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -288,6 +297,7 @@ fn edit_tiles(
     mut next: ResMut<NextState<GameState>>,
     mut room: ResMut<RoomMap>,
     mut pending: ResMut<PendingLink>,
+    mut save: ResMut<Save>,
     level_root: Res<LevelRoot>,
     rock: Res<RockSprite>,
     camera: Query<&Transform, With<Camera2d>>,
@@ -364,6 +374,33 @@ fn edit_tiles(
         }
         redraw(&mut commands, &overlay);
         draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        return;
+    }
+
+    // The ability-toggle menu (testing): up/down select, space/enter toggle, esc close.
+    // Toggling edits the save's ability list, which takes effect when you F2 back to play.
+    if let Some(mut cursor) = buffer.ability_menu {
+        if keys.just_pressed(KeyCode::ArrowUp) {
+            cursor = (cursor + Ability::ALL.len() - 1) % Ability::ALL.len();
+        }
+        if keys.just_pressed(KeyCode::ArrowDown) {
+            cursor = (cursor + 1) % Ability::ALL.len();
+        }
+        if keys.any_just_pressed([KeyCode::Space, KeyCode::Enter]) {
+            let a = Ability::ALL[cursor];
+            let mut have = crate::player::Abilities::from_csv(&save.abilities);
+            have.set(a, !have.has(a));
+            save.abilities = have.to_csv();
+            crate::save::write_save(&save);
+        }
+        if keys.any_just_pressed([KeyCode::Escape, KeyCode::KeyY]) {
+            buffer.ability_menu = None;
+        } else {
+            buffer.ability_menu = Some(cursor);
+        }
+        redraw(&mut commands, &overlay);
+        draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        draw_ability_menu(&mut commands, center, &save, cursor);
         return;
     }
 
@@ -594,8 +631,54 @@ fn edit_tiles(
             draw_room_map(&mut commands, center, &game_assets, &map_assets, &room);
             return;
         }
-        // Paint the brush over the stamp shape (a single cell when none is traced).
-        paint_shape(&mut buffer, c, r, brush);
+        if brush == CHEST_BRUSH {
+            // Chests are coordinate data (no grid glyph): toggle one at the cursor, granting
+            // the currently selected ability.
+            let (ci, cr) = (c as i32, r as i32);
+            if let Some(idx) = buffer
+                .chests
+                .iter()
+                .position(|ch| (ch.col, ch.row) == (ci, cr))
+            {
+                buffer.chests.remove(idx);
+                buffer.status = "chest removed".to_string();
+            } else {
+                let ability = buffer.chest_ability;
+                buffer.chests.push(Chest {
+                    col: ci,
+                    row: cr,
+                    ability,
+                });
+                buffer.status = format!("chest: {}", ability.label());
+            }
+        } else {
+            // Paint the brush over the stamp shape (a single cell when none is traced).
+            paint_shape(&mut buffer, c, r, brush);
+        }
+        changed = true;
+    }
+    if keys.just_pressed(KeyCode::KeyK) {
+        // Cycle which ability the Chest brush places.
+        buffer.chest_ability = next_ability(buffer.chest_ability);
+        buffer.status = format!("chest ability: {}", buffer.chest_ability.label());
+        changed = true;
+    }
+    if keys.just_pressed(KeyCode::KeyO) {
+        // Cycle this room's boss reward ability (none -> each -> none).
+        buffer.boss_reward = next_boss_reward(&buffer.boss_reward);
+        let shown = if buffer.boss_reward.is_empty() {
+            "none".to_string()
+        } else {
+            Ability::parse(&buffer.boss_reward)
+                .map(|a| a.label().to_string())
+                .unwrap_or_else(|| buffer.boss_reward.clone())
+        };
+        buffer.status = format!("boss reward: {shown}");
+        changed = true;
+    }
+    if keys.just_pressed(KeyCode::KeyY) {
+        // Open the ability-toggle menu (test movement with abilities on/off).
+        buffer.ability_menu = Some(0);
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyG) {
@@ -706,6 +789,20 @@ fn next_scenery(current: &str) -> String {
     order[(i + 1) % order.len()].to_string()
 }
 
+/// The next ability in [`Ability::ALL`] (wrapping) — for the Chest brush's ability.
+fn next_ability(current: Ability) -> Ability {
+    let i = Ability::ALL.iter().position(|a| *a == current).unwrap_or(0);
+    Ability::ALL[(i + 1) % Ability::ALL.len()]
+}
+
+/// Cycle a room's boss-reward key: none → each ability → none.
+fn next_boss_reward(current: &str) -> String {
+    let mut order = vec![String::new()];
+    order.extend(Ability::ALL.iter().map(|a| a.key().to_string()));
+    let i = order.iter().position(|s| s == current).unwrap_or(0);
+    order[(i + 1) % order.len()].clone()
+}
+
 fn scenery_layer(s: &Scenery, slot: usize) -> &str {
     [&s.far, &s.mid, &s.near, &s.fg][slot.min(3)]
 }
@@ -801,6 +898,25 @@ fn draw_tiles(
                 );
                 box_at(commands, pos, Vec2::splat(tile * 0.9), 152.0, DOOR_COLOR);
             }
+        }
+    }
+
+    // Chests (coordinate data) drawn with the chest sprite.
+    for chest in &buffer.chests {
+        if (chest.col as usize) < cols && (chest.row as usize) < rows {
+            let pos = Vec2::new(
+                top_left.x + (chest.col as f32 + 0.5) * tile,
+                top_left.y - (chest.row as f32 + 0.5) * tile,
+            );
+            commands.spawn((
+                EditorEntity,
+                Sprite {
+                    image: assets.chest.clone(),
+                    custom_size: Some(Vec2::splat(tile * 0.9)),
+                    ..default()
+                },
+                Transform::from_xyz(pos.x, pos.y, 152.5),
+            ));
         }
     }
 
@@ -950,16 +1066,25 @@ fn draw_tiles(
             ),
         }
     } else {
-        let stamp_note = if buffer.stamp.is_empty() {
-            String::new()
-        } else {
+        let note = if BRUSHES[buffer.brush].0 == CHEST_BRUSH {
+            format!("   [grants: {}]", buffer.chest_ability.label())
+        } else if !buffer.stamp.is_empty() {
             format!("   [stamp: {} cells]", buffer.stamp.len())
+        } else {
+            String::new()
+        };
+        let reward = if buffer.boss_reward.is_empty() {
+            "none".to_string()
+        } else {
+            Ability::parse(&buffer.boss_reward)
+                .map(|a| a.label().to_string())
+                .unwrap_or_else(|| buffer.boss_reward.clone())
         };
         (
-            format!("brush: {}{}", BRUSHES[buffer.brush].1, stamp_note),
-            "arrows move  |  space paint  |  X erase  |  tab brush  |  G stamp  |  P mover"
+            format!("brush: {}{}   boss reward: {}", BRUSHES[buffer.brush].1, note, reward),
+            "arrows move | space paint | X erase | tab brush | G stamp | P mover | K chest-abil"
                 .to_string(),
-            "V/C scenery | N music | [ ] -= size | B colour | S save | enter name | M rooms | esc"
+            "V/C scenery | N music | O boss-reward | [ ]-= size | B colour | S save | M rooms | esc"
                 .to_string(),
         )
     };
@@ -997,6 +1122,48 @@ fn draw_tiles(
             "[enter] ok    [esc] cancel",
         );
     }
+}
+
+/// Draw the ability-toggle overlay (the `Y` menu): each ability with `[x]`/`[ ]` from the
+/// save, the cursor highlighted. Box at z 155 (under the z-156 editor text).
+fn draw_ability_menu(commands: &mut Commands, center: Vec2, save: &Save, cursor: usize) {
+    let have = crate::player::Abilities::from_csv(&save.abilities);
+    box_at(
+        commands,
+        center,
+        Vec2::new(460.0, 240.0),
+        155.0,
+        Color::srgba(0.04, 0.04, 0.09, 0.98),
+    );
+    text_at(
+        commands,
+        center + Vec2::new(0.0, 90.0),
+        22.0,
+        Color::srgb(0.92, 0.94, 0.98),
+        "ABILITIES (test)",
+    );
+    for (i, ability) in Ability::ALL.iter().enumerate() {
+        let mark = if have.has(*ability) { "[x]" } else { "[ ]" };
+        let color = if i == cursor {
+            Color::srgb(1.0, 0.9, 0.5)
+        } else {
+            Color::srgb(0.8, 0.82, 0.9)
+        };
+        text_at(
+            commands,
+            center + Vec2::new(0.0, 44.0 - i as f32 * 34.0),
+            18.0,
+            color,
+            &format!("{mark} {}", ability.label()),
+        );
+    }
+    text_at(
+        commands,
+        center + Vec2::new(0.0, -100.0),
+        13.0,
+        Color::srgb(0.55, 0.58, 0.66),
+        "up/down select   space/enter toggle   Y/esc close",
+    );
 }
 
 // --- room-map view -------------------------------------------------------
@@ -1711,6 +1878,8 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         movers: Vec::new(),
         scenery: Scenery::default(),
         music: String::new(),
+        boss_reward: String::new(),
+        chests: Vec::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -1811,6 +1980,8 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         movers: Vec::new(),
         scenery: Scenery::default(),
         music: String::new(),
+        boss_reward: String::new(),
+        chests: Vec::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -1890,6 +2061,8 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         movers: map.movers.clone(),
         scenery: map.scenery.clone(),
         music: map.music.clone(),
+        boss_reward: map.boss_reward.clone(),
+        chests: map.chests.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1928,6 +2101,8 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         movers: buffer.movers.clone(),     // preserved across edits (hand-authored)
         scenery: buffer.scenery.clone(),
         music: buffer.music.clone(),
+        boss_reward: buffer.boss_reward.clone(),
+        chests: buffer.chests.clone(),
         bg: buffer.bg,
         tiles: buffer
             .grid

@@ -541,9 +541,9 @@ fn boss_projectiles(
     }
 }
 
-/// When the boss is spent: reward the player (energy + double jump), persist it all,
-/// and clear the boss along with its shots and summons. ([`arena_clear`] then unlocks
-/// the room once nothing else is left alive.)
+/// When the boss is spent: reward the player (energy, plus the room's `boss_reward` ability
+/// **if one is set** — there's no default), persist it all, and clear the boss along with its
+/// shots and summons. ([`arena_clear`] then unlocks the room once nothing else is left alive.)
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // distinct queries/resources
 fn boss_death(
     mut commands: Commands,
@@ -551,6 +551,7 @@ fn boss_death(
     mut energy: ResMut<Energy>,
     mut abilities: ResMut<Abilities>,
     mut save: ResMut<Save>,
+    mut sfx: MessageWriter<crate::audio::PlaySfx>,
     stats: Res<Stats>,
     lost: Res<LostEnergy>,
     current: Res<CurrentRoom>,
@@ -565,8 +566,13 @@ fn boss_death(
     }
 
     energy.0 += REWARD_ENERGY;
-    abilities.double_jump = true;
-    save.double_jump = true;
+    // Grant the room's ability reward only if one is set explicitly (`boss_reward` in the
+    // map) — bosses no longer hand out a default ability.
+    if let Some(reward) = current.reward {
+        abilities.grant(reward);
+        save.abilities = abilities.to_csv();
+        sfx.write(crate::audio::PlaySfx(crate::audio::Sfx::Save));
+    }
     // Mark *this* arena cleared (so other bosses are unaffected) and persist it all.
     cleared.0.insert(current.name.clone());
     save.cleared_bosses = cleared.0.iter().cloned().collect::<Vec<_>>().join(",");

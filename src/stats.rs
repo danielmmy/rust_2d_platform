@@ -20,6 +20,7 @@ use crate::audio::{PlaySfx, Sfx};
 use crate::combat::{Energy, LostEnergy};
 use crate::health::Health;
 use crate::menu::Paused;
+use crate::player::{Abilities, Ability};
 use crate::save::{self, Save};
 use crate::state::GameState;
 use crate::world::{CurrentRoom, Entry, LoadMap};
@@ -191,7 +192,10 @@ impl Plugin for StatsPlugin {
             )
             .add_systems(OnEnter(CharMenu::Open), open_overlay)
             .add_systems(OnExit(CharMenu::Open), despawn_char_menu)
-            .add_systems(Update, update_overlay.run_if(in_state(CharMenu::Open)));
+            .add_systems(
+                Update,
+                (update_overlay, refresh_ability_list).run_if(in_state(CharMenu::Open)),
+            );
     }
 }
 
@@ -254,6 +258,10 @@ pub(crate) struct BenchAt(pub(crate) Option<(i32, i32)>);
 /// Tags every entity that makes up the overlay.
 #[derive(Component)]
 struct CharEntity;
+
+/// The character screen's read-only "acquired abilities" line.
+#[derive(Component)]
+struct AbilityList;
 
 /// A live line on the overlay, refreshed each frame.
 #[derive(Component)]
@@ -366,6 +374,41 @@ fn open_overlay(
     spawn_line(&mut commands, center, -120.0, 24.0, "", Some(Line::Energy));
     spawn_line(&mut commands, center, -152.0, 18.0, "", Some(Line::Lost));
     spawn_line(&mut commands, center, -195.0, 18.0, hint, None);
+
+    // The character sheet lists acquired abilities (read-only; refreshed each frame).
+    if *mode == OverlayMode::Character {
+        commands.spawn((
+            CharEntity,
+            AbilityList,
+            Text2d::new(String::new()),
+            TextFont {
+                font_size: FontSize::Px(16.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.7, 0.85, 0.95)),
+            Transform::from_xyz(center.x, center.y - 80.0, 201.0),
+        ));
+    }
+}
+
+/// Refresh the character sheet's acquired-abilities line.
+fn refresh_ability_list(
+    abilities: Res<Abilities>,
+    mut line: Query<&mut Text2d, With<AbilityList>>,
+) {
+    let Ok(mut text) = line.single_mut() else {
+        return;
+    };
+    let names: Vec<&str> = Ability::ALL
+        .iter()
+        .filter(|a| abilities.has(**a))
+        .map(|a| a.label())
+        .collect();
+    text.0 = if names.is_empty() {
+        "Abilities: none yet".to_string()
+    } else {
+        format!("Abilities: {}", names.join(", "))
+    };
 }
 
 /// Spawn one overlay text line; `live` tags it for per-frame refresh.

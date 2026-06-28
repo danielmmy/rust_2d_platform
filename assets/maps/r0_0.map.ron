@@ -11,6 +11,9 @@
     ],
     enemies: [
     ],
+    chests: [
+        (col: 7, row: 20, ability: "pogo"),
+    ],
     movers: [
         // loop: a 3-tile platform patrolling a rectangle, forever.
         (tiles: [(22, 18), (23, 18), (24, 18)], path: [(22, 9), (30, 9), (30, 18)], mode: "loop", speed: 70, rest: 700),

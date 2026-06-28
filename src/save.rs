@@ -75,8 +75,12 @@ pub struct Save {
     pub lost_y: f32,
     /// Comma-separated rooms whose boss has been beaten (so it doesn't respawn).
     pub cleared_bosses: String,
-    /// Whether the double-jump ability has been unlocked (the boss reward).
-    pub double_jump: bool,
+    /// Comma-separated unlocked abilities (see [`crate::player::Ability::key`]). Empty on a
+    /// fresh game — everything but the base jump + slash must be acquired.
+    pub abilities: String,
+    /// Comma-separated ids of chests already collected (`"room@col,row"`), so they don't
+    /// re-grant on revisit.
+    pub chests: String,
 }
 
 const SAVES_DIR: &str = "saves";
@@ -91,7 +95,7 @@ impl Save {
             "(mode: \"{}\", name: \"{}\", room: \"{}\", bench_room: \"{}\", bench_col: {}, \
              bench_row: {}, energy: {}, vitality: {}, strength: {}, poise: {}, \
              lost_amount: {}, lost_room: \"{}\", lost_x: {}, lost_y: {}, \
-             cleared_bosses: \"{}\", double_jump: {})\n",
+             cleared_bosses: \"{}\", abilities: \"{}\", chests: \"{}\")\n",
             self.mode.as_str(),
             self.name,
             self.room,
@@ -107,7 +111,8 @@ impl Save {
             self.lost_x,
             self.lost_y,
             self.cleared_bosses,
-            i32::from(self.double_jump),
+            self.abilities,
+            self.chests,
         )
     }
 
@@ -150,7 +155,18 @@ impl Save {
             lost_x: opt_f32("lost_x"),
             lost_y: opt_f32("lost_y"),
             cleared_bosses: opt_str("cleared_bosses"),
-            double_jump: opt_i32("double_jump") != 0,
+            // Migrate the old single `double_jump` flag into the abilities list.
+            abilities: {
+                let mut a = opt_str("abilities");
+                if opt_i32("double_jump") != 0 && !a.contains("double_jump") {
+                    if !a.is_empty() {
+                        a.push(',');
+                    }
+                    a.push_str("double_jump");
+                }
+                a
+            },
+            chests: opt_str("chests"),
         })
     }
 
@@ -258,12 +274,14 @@ mod tests {
             lost_x: 128.5,
             lost_y: -64.0,
             cleared_bosses: "r0_1,r3_2".to_string(),
-            double_jump: true,
+            abilities: "double_jump,dash".to_string(),
+            chests: "r0_0@4,18".to_string(),
         };
         let parsed = Save::from_ron(2, &save.to_ron()).expect("parse");
         assert_eq!(parsed.mode, GameMode::Builder);
         assert_eq!(parsed.cleared_bosses, "r0_1,r3_2");
-        assert!(parsed.double_jump);
+        assert_eq!(parsed.abilities, "double_jump,dash");
+        assert_eq!(parsed.chests, "r0_0@4,18");
         assert_eq!(parsed.name, "Wisp");
         assert_eq!(parsed.room, "r1_0");
         assert_eq!(parsed.bench_room, "r1_0");

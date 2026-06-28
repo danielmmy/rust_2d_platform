@@ -22,16 +22,23 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | Jump | `Space` (dedicated button) | `A` (south) |
 | Look up / Crouch | `W`/`↑` · `S`/`↓` | D-pad up · down |
 | Attack (sword) | `J` | `X` (west) |
-| **Pogo** (down-slash) | in the air, hold `↓` + `J` | in the air, hold down + `X` |
+| **Dash** (once unlocked) | `Shift` / `L` | right bumper |
+| **Pogo** (down-slash, once unlocked) | in the air, hold `↓` + `J` | in the air, hold down + `X` |
 | Interact / bench shop | `E` | `Y` (north) |
-| Character screen (view stats) | `C` | left bumper |
+| Character screen (view stats + abilities) | `C` | left bumper |
 | World map | `M` | `Start` |
 | Pause | `Esc` | `Select` |
 
-Jump is now its **own button** (`Space` / south) — `↑` no longer jumps, so holding **Up**
+Jump is its **own button** (`Space` / south) — `↑` no longer jumps, so holding **Up**
 **looks up** and **Down** **crouches** (each with its own pose; hold a moment and the
 **camera pans** that way too, clamped to the room). Menus still confirm with
 `Enter` / `Space` / `Z`.
+
+**Abilities are earned.** A new game starts with only the **single jump** and **slash**;
+**double jump, wall jump, dash, and pogo** must each be unlocked — by **beating a boss** or
+**opening a chest** the level designer placed. The character screen (`C`) lists what you've
+acquired. (Built‑in maps grant double jump from the original boss; place chests / set boss
+rewards in the builder to hand out the rest — see [Level builder](#level-builder).)
 
 The game opens on a **main menu** (New Game / Load Game / **Options** / Quit). **New Game**
 and **Load Game** open a **ten-slot** picker (each labelled with its `[Story]` or
@@ -182,23 +189,23 @@ The structure is plugin-per-concern:
 | --- | --- |
 | [`input`](src/input.rs) | Keyboard + gamepad → one `PlayerIntent`. |
 | [`physics`](src/physics.rs) | Hand-rolled AABB-vs-tile collision (unit-tested). |
-| [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`; rides moving platforms. |
+| [`player`](src/player.rs) | Movement + jump feel; `MovementConfig`; dash; rides moving platforms; unlockable `Abilities`. |
 | [`movers`](src/movers.rs) | Generic moving things — carries whatever the grid authors at a mover's cells along a path (loop/pingpong/once); solid ones are ridable. |
 | [`scenery`](src/scenery.rs) | Parallax backdrops — looping, multi-speed layers per room from one of 12 themed sets. |
 | [`anim`](src/anim.rs) | Extensible sprite-sheet animation: imports N×M grids; player / portal / bench / enemy / boss clips. |
-| [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches; loads each save's world from its [`LevelRoot`]. |
+| [`world`](src/world.rs) | Rooms, edge transitions, the 4-way neighbour graph, teleporters, benches, ability **chests**; loads each save's world from its [`LevelRoot`]. |
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
 | [`health`](src/health.rs) | Health (sized by Vitality), i-frames, the colour-graded health-bar HUD, death → bloodstain + last bench. |
 | [`audio`](src/audio.rs) | Sound effects (`PlaySfx`) + per-room looping **music**; embedded OGG, with FX/Music volumes in Options. |
 | [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, bloodstain recovery, the 3-hit sword combo + **pogo** down-slash. |
 | [`stats`](src/stats.rs) | Character stats (Vitality/Strength/Poise), the upgrade shop, and the character screen. |
-| [`boss`](src/boss.rs) | The boss fight: fog-gate arena lock, attack patterns, projectiles, HUD, and the double-jump reward. |
+| [`boss`](src/boss.rs) | The boss fight: fog-gate arena lock, attack patterns, projectiles, HUD, and a configurable ability reward. |
 | [`save`](src/save.rs) | Ten-slot save system (mode + room + bench + progression), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms; look-up/down pan. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
 | [`menu`](src/menu.rs) | Main menu (mode + slot picker) + pause menu (`Esc`) + Options (window mode, FX/Music volume); `MainMenu`/`Paused` states. |
-| [`editor`](src/editor.rs) | Level builder (`F2` / pause **Edit Levels**, Builder saves): a tile view + a room-manager map. |
+| [`editor`](src/editor.rs) | Level builder (`F2` / pause **Edit Levels**, Builder saves): tile view + room map; places chests, sets boss rewards, ability test menu. |
 
 The crate's **only dependency is `bevy`** — the maps are `.map.ron` files read by
 our own [`ron`](src/ron.rs) parser (a small `AssetLoader` in [`world`](src/world.rs)
@@ -338,8 +345,16 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | `G` | trace stamp shape | `S` | save |
 | `N` | room music (cycle track) | `M` | room manager |
 | `P` | mover (moving tile) / delete | `Esc` | leave the builder |
-| `Enter` | rename (type a name) | | |
+| `K` | chest brush's granted ability | `O` | this room's boss reward |
+| `Y` | ability test menu (toggle on/off) | `Enter` | rename (type a name) |
 | `Space` (Portal/Door brush) | start a portal / door link | | |
+| `Space` (Chest brush) | place / remove a chest | | |
+
+**Abilities** (chests & boss rewards) — `Tab` to the **Chest** brush and `Space` to drop a
+chest; **`K`** cycles which ability it grants (Double Jump / Wall Jump / Dash / Pogo). **`O`**
+cycles the **boss reward** — the ability this room's boss hands over when beaten. Press **`Y`**
+to open an **ability test menu** that toggles your unlocked abilities on/off (it edits the
+save, applied when you `F2` back to play) so you can test gated areas without grinding.
 
 **Rooms** (`M`) — manage the world as a grid:
 
@@ -408,7 +423,8 @@ needed to run. Edit the source files and **rebuild** to embed the new versions.
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
 (`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `flyer.png`,
-`orb.png`, `slash.png`). Sizes are set in code via `custom_size`, so any resolution
+`orb.png`, `slash.png`, `chest.png` — the last drawn by
+[`tools/gen_chest.py`](tools/gen_chest.py)). Sizes are set in code via `custom_size`, so any resolution
 works — the world keeps the same scale. The enemy sheets (`enemy.png` walkers,
 `jumper.png` leapers, `flyer.png` winged flyers) are **near-white** so each kind tints
 them to its colour.
@@ -474,6 +490,17 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — **Abilities are now acquired, plus a new Dash.** A fresh game has only the
+  **single jump + slash**; **double jump, wall jump, dash, and pogo** are gated
+  ([`player::Abilities`](src/player.rs)) and unlocked by **beating a boss** (its `boss_reward`
+  is set per room — **no default**; an unset boss gives only energy — [`boss`](src/boss.rs)) or
+  **opening a chest**
+  ([`world`](src/world.rs); sprite from [`tools/gen_chest.py`](tools/gen_chest.py)); both
+  persist in the save. The **dash** is a quick horizontal burst (`Shift`/`L` / right bumper,
+  short cooldown, one air-dash per jump). The character screen lists acquired abilities. In
+  the level builder: a **Chest** brush (`K` picks its ability), **`O`** sets the room's boss
+  reward, and **`Y`** opens an ability test menu. Save format: `double_jump` became an
+  `abilities` list (old saves migrate), plus a `chests` field for opened chests.
 - **2026-06-28** — Resting at a bench now plays a short **save jingle** (an ascending
   C-major arpeggio) as audible confirmation that the game saved & restored
   ([`audio`](src/audio.rs) `Sfx::Save`, synthesised in [`tools/gen_sfx.py`](tools/gen_sfx.py);

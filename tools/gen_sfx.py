@@ -176,6 +176,11 @@ SOUNDS = {
         tone(990.0, 0.12, vol=0.30, wave="sine", decay=6.0),
         0.07,
     )),
+    # Dash: a short airy whoosh — low-passed noise + a quick falling tone.
+    "dash": lambda: finalize(layer(
+        noise(0.14, vol=0.34, decay=12.0, lp=0.5),
+        tone(700.0, 0.12, vol=0.18, wave="sine", decay=8.0, f1=300.0),
+    )),
     # Save/rest jingle: a bright ascending C-major arpeggio (C-E-G-C) resolving high.
     "save": lambda: finalize(at(at(at(
         tone(523.25, 0.26, vol=0.26, wave="sine", decay=6.0),
