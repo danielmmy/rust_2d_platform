@@ -710,6 +710,12 @@ fn edit_tiles(
         // Erase the stamp shape (a single cell when none is traced). Pads and doors aren't
         // grid glyphs, so erasing also drops any pad / outgoing door whose origin sits there.
         paint_shape(&mut buffer, c, r, '.');
+        // ...and any chest at this cell (chests are coordinate data, not glyphs).
+        let here = (c as i32, r as i32);
+        if let Some(idx) = buffer.chests.iter().position(|ch| (ch.col, ch.row) == here) {
+            buffer.chests.remove(idx);
+            buffer.status = "chest removed".to_string();
+        }
         changed = true;
     }
     if keys.just_pressed(KeyCode::Tab) {

@@ -36,9 +36,10 @@ Jump is its **own button** (`Space` / south) — `↑` no longer jumps, so holdi
 
 **Abilities are earned.** A new game starts with only the **single jump** and **slash**;
 **double jump, wall jump, dash, and pogo** must each be unlocked — by **beating a boss** or
-**opening a chest** the level designer placed. The character screen (`C`) lists what you've
-acquired. (Built‑in maps grant double jump from the original boss; place chests / set boss
-rewards in the builder to hand out the rest — see [Level builder](#level-builder).)
+**opening a chest** (a solid prop; walk up and press **`E`** — it pops open and stays open).
+The character screen (`C`) lists what you've acquired. (Bosses give no reward by default;
+place chests / set boss rewards in the builder to hand them out — see
+[Level builder](#level-builder).)
 
 The game opens on a **main menu** (New Game / Load Game / **Options** / Quit). **New Game**
 and **Load Game** open a **ten-slot** picker (each labelled with its `[Story]` or
@@ -350,11 +351,13 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | `Space` (Portal/Door brush) | start a portal / door link | | |
 | `Space` (Chest brush) | place / remove a chest | | |
 
-**Abilities** (chests & boss rewards) — `Tab` to the **Chest** brush and `Space` to drop a
-chest; **`K`** cycles which ability it grants (Double Jump / Wall Jump / Dash / Pogo). **`O`**
-cycles the **boss reward** — the ability this room's boss hands over when beaten. Press **`Y`**
-to open an **ability test menu** that toggles your unlocked abilities on/off (it edits the
-save, applied when you `F2` back to play) so you can test gated areas without grinding.
+**Abilities** (chests & boss rewards) — `Tab` to the **Chest** brush and `Space` to place a
+chest (`Space` again on it, or **`X`**, removes it); **`K`** cycles which ability it grants
+(Double Jump / Wall Jump / Dash / Pogo). In play a chest is a **solid** prop you open with
+**`E`**, leaving an open chest behind. **`O`** cycles the **boss reward** — the ability this
+room's boss hands over when beaten (none by default). Press **`Y`** to open an **ability test
+menu** that toggles your unlocked abilities on/off (it edits the save, applied when you `F2`
+back to play) so you can test gated areas without grinding.
 
 **Rooms** (`M`) — manage the world as a grid:
 
@@ -423,7 +426,7 @@ needed to run. Edit the source files and **rebuild** to embed the new versions.
 
 Drop your own PNGs over the placeholders in `assets/sprites/`
 (`tile.png`, `spikes.png`, `rock.png`, `enemy.png`, `jumper.png`, `flyer.png`,
-`orb.png`, `slash.png`, `chest.png` — the last drawn by
+`orb.png`, `slash.png`, `chest.png` / `chest_open.png` — the last two drawn by
 [`tools/gen_chest.py`](tools/gen_chest.py)). Sizes are set in code via `custom_size`, so any resolution
 works — the world keeps the same scale. The enemy sheets (`enemy.png` walkers,
 `jumper.png` leapers, `flyer.png` winged flyers) are **near-white** so each kind tints
@@ -490,6 +493,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — **Chests** are now **solid props you open with `E`** (was walk-over):
+  walk up — an `[E] open` prompt shows — press `E` to take the ability; the chest swaps to an
+  **open sprite** ([`chest_open.png`](assets/sprites/chest_open.png)) and stays open. In the
+  builder, **`X`** also removes a chest (not just `Space` toggling). ([`world`](src/world.rs))
 - **2026-06-28** — **Abilities are now acquired, plus a new Dash.** A fresh game has only the
   **single jump + slash**; **double jump, wall jump, dash, and pogo** are gated
   ([`player::Abilities`](src/player.rs)) and unlocked by **beating a boss** (its `boss_reward`

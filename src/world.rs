@@ -638,8 +638,14 @@ struct ChestItem {
     id: String,
 }
 
-/// Half-extents of a chest's pickup box.
-const CHEST_HALF: Vec2 = Vec2::new(14.0, 12.0);
+/// The "[E] open" prompt shown next to a chest in reach (one shared, repositioned entity).
+#[derive(Component)]
+struct ChestPrompt;
+
+/// Half-extents of a chest, plus how far past it the player can still reach to open it
+/// (chests are solid, so the player stands *beside* one rather than on it).
+const CHEST_HALF: Vec2 = Vec2::new(14.0, 14.0);
+const CHEST_REACH: f32 = 12.0;
 
 /// Seed the collected-chest set from the save when a game starts.
 fn apply_chest_save(save: Res<Save>, mut chests: ResMut<ClearedChests>) {
@@ -651,32 +657,88 @@ fn apply_chest_save(save: Res<Save>, mut chests: ResMut<ClearedChests>) {
         .collect();
 }
 
-/// Touching a chest grants its ability: bank it (persisted immediately so death can't undo
-/// it), mark the chest collected, open it (despawn), and play the reward jingle.
-fn chest_pickup(
-    mut commands: Commands,
+/// Show the prompt next to the nearest in-reach chest and, on `E`, open it: grant the
+/// ability (persisted immediately so death can't undo it), mark it collected, swap to the
+/// open sprite, and play the reward jingle.
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
+fn chest_interact(
+    intent: Res<PlayerIntent>,
+    assets: Res<GameAssets>,
     mut abilities: ResMut<Abilities>,
     mut collected: ResMut<ClearedChests>,
     mut save: ResMut<Save>,
     mut sfx: MessageWriter<crate::audio::PlaySfx>,
-    player: Query<&Transform, With<Player>>,
-    chests: Query<(Entity, &Transform, &ChestItem)>,
+    mut commands: Commands,
+    player: Query<&Transform, (With<Player>, Without<ChestPrompt>)>,
+    mut chests: Query<(Entity, &Transform, &mut Sprite, &ChestItem), Without<ChestPrompt>>,
+    mut prompt: Query<(&mut Transform, &mut Visibility), With<ChestPrompt>>,
 ) {
     let Ok(player_tf) = player.single() else {
         return;
     };
     let player_pos = player_tf.translation.truncate();
-    for (entity, tf, chest) in &chests {
-        let delta = (tf.translation.truncate() - player_pos).abs();
-        if delta.x < CHEST_HALF.x + PLAYER_HALF.x && delta.y < CHEST_HALF.y + PLAYER_HALF.y {
-            abilities.grant(chest.ability);
-            save.abilities = abilities.to_csv();
-            collected.0.insert(chest.id.clone());
-            save.chests = collected.0.iter().cloned().collect::<Vec<_>>().join(",");
-            crate::save::write_save(&save);
-            sfx.write(crate::audio::PlaySfx(crate::audio::Sfx::Save));
-            commands.entity(entity).despawn();
+
+    // The nearest chest within reach (chests are solid, so reach extends a little past them).
+    let reach = CHEST_HALF + PLAYER_HALF + Vec2::splat(CHEST_REACH);
+    let mut nearest: Option<(Entity, Vec2)> = None;
+    let mut best = f32::INFINITY;
+    for (entity, tf, _, _) in &chests {
+        let pos = tf.translation.truncate();
+        let delta = (pos - player_pos).abs();
+        if delta.x < reach.x && delta.y < reach.y && pos.distance(player_pos) < best {
+            best = pos.distance(player_pos);
+            nearest = Some((entity, pos));
         }
+    }
+
+    if let Ok((mut prompt_tf, mut visibility)) = prompt.single_mut() {
+        match nearest {
+            Some((_, pos)) => {
+                prompt_tf.translation.x = pos.x;
+                prompt_tf.translation.y = pos.y + TILE;
+                *visibility = Visibility::Visible;
+            }
+            None => *visibility = Visibility::Hidden,
+        }
+    }
+
+    if intent.interact
+        && let Some((entity, _)) = nearest
+        && let Ok((_, _, mut sprite, chest)) = chests.get_mut(entity)
+    {
+        abilities.grant(chest.ability);
+        save.abilities = abilities.to_csv();
+        collected.0.insert(chest.id.clone());
+        save.chests = collected.0.iter().cloned().collect::<Vec<_>>().join(",");
+        crate::save::write_save(&save);
+        sprite.image = assets.chest_open.clone(); // leave an open chest behind
+        sfx.write(crate::audio::PlaySfx(crate::audio::Sfx::Save));
+        commands.entity(entity).remove::<ChestItem>();
+    }
+}
+
+/// Spawn the (hidden) chest prompt; [`chest_interact`] positions and shows it.
+fn spawn_chest_prompt(mut commands: Commands, existing: Query<(), With<ChestPrompt>>) {
+    if !existing.is_empty() {
+        return;
+    }
+    commands.spawn((
+        ChestPrompt,
+        Text2d::new("[E] open"),
+        TextFont {
+            font_size: FontSize::Px(16.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.96, 0.9, 0.6)),
+        // Above the foreground scenery (z=30), like the bench prompt.
+        Transform::from_xyz(0.0, 0.0, 40.0),
+        Visibility::Hidden,
+    ));
+}
+
+fn despawn_chest_prompt(mut commands: Commands, prompts: Query<Entity, With<ChestPrompt>>) {
+    for entity in &prompts {
+        commands.entity(entity).despawn();
     }
 }
 
@@ -751,6 +813,7 @@ pub(crate) struct GameAssets {
     pub(crate) slash: Handle<Image>,
     pub(crate) boss: Handle<Image>,
     pub(crate) chest: Handle<Image>,
+    pub(crate) chest_open: Handle<Image>,
     /// Parallax scenery layers by file name (e.g. `"forest_meadow_far.png"`).
     pub(crate) scenery: HashMap<String, Handle<Image>>,
 }
@@ -879,9 +942,17 @@ impl Plugin for WorldPlugin {
             .add_systems(Update, wait_for_load.run_if(in_state(GameState::Loading)))
             .add_systems(
                 OnEnter(GameState::Playing),
-                (enter_playing, spawn_bench_prompt, apply_chest_save),
+                (
+                    enter_playing,
+                    spawn_bench_prompt,
+                    spawn_chest_prompt,
+                    apply_chest_save,
+                ),
             )
-            .add_systems(OnExit(GameState::Playing), despawn_bench_prompt)
+            .add_systems(
+                OnExit(GameState::Playing),
+                (despawn_bench_prompt, despawn_chest_prompt),
+            )
             .add_systems(
                 Update,
                 (
@@ -891,7 +962,7 @@ impl Plugin for WorldPlugin {
                     detect_transitions.in_set(GameSet::Transitions),
                     detect_teleport.in_set(GameSet::Transitions),
                     bench_interact.in_set(GameSet::Transitions),
-                    chest_pickup.in_set(GameSet::Transitions),
+                    chest_interact.in_set(GameSet::Transitions),
                 )
                     .run_if(in_state(GameState::Playing)),
             );
@@ -942,6 +1013,7 @@ fn load_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         slash: embedded_sprite(&mut images, "slash.png"),
         boss: embedded_sprite(&mut images, "boss.png"),
         chest: embedded_sprite(&mut images, "chest.png"),
+        chest_open: embedded_sprite(&mut images, "chest_open.png"),
         scenery: EMBEDDED_SCENERY
             .iter()
             .map(|(name, bytes)| (name.to_string(), decode_png(&mut images, name, bytes)))
@@ -1296,26 +1368,33 @@ fn handle_load_map(
     // Parallax scenery layers for this room (despawned with the room as MapEntity).
     crate::scenery::spawn_scenery(&mut commands, &assets, &map.scenery);
 
-    // Treasure chests: spawn the ones not yet collected (each grants an ability on touch).
+    // Treasure chests are **solid** props you press `E` to open. Already-collected ones
+    // show the open sprite; the rest are live [`ChestItem`]s. Either way the cell is solid.
     for chest in &map.chests {
         let id = chest_id(&load.map, chest.col, chest.row);
-        if cleared.chests.0.contains(&id) {
-            continue;
-        }
         let pos = to_world(chest.col, chest.row);
-        commands.spawn((
+        let collected = cleared.chests.0.contains(&id);
+        solids.0.insert((chest.col, height - 1 - chest.row));
+        let image = if collected {
+            assets.chest_open.clone()
+        } else {
+            assets.chest.clone()
+        };
+        let mut e = commands.spawn((
             MapEntity,
-            ChestItem {
-                ability: chest.ability,
-                id,
-            },
             Sprite {
-                image: assets.chest.clone(),
+                image,
                 custom_size: Some(Vec2::splat(TILE * 0.9)),
                 ..default()
             },
             Transform::from_xyz(pos.x, pos.y, 4.0),
         ));
+        if !collected {
+            e.insert(ChestItem {
+                ability: chest.ability,
+                id,
+            });
+        }
     }
 
     // Teleporter pads are pure data (no grid glyph) — spawn one per portal at its
