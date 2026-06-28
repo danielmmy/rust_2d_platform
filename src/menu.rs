@@ -1,24 +1,29 @@
 //! Main menu (title screen) and pause menu.
 //!
 //! The game boots into [`GameState::MainMenu`]. The title screen has a few screens:
-//! the main list, and a save-slot picker for **New Game** / **Load Game** (a
-//! three-slot system — see [`crate::save`]). During play, `Esc` (or the gamepad
-//! `Select` button) toggles a [`Paused`] overlay (Continue / **Character** / Main Menu
-//! / Quit); **Character** opens a read-only stat sheet sub-screen. Gameplay is frozen
-//! while paused (the gameplay [`GameSet`](crate::GameSet) chain is gated on
-//! [`Paused::Running`]).
+//! the main list, a save-slot picker for **New Game** / **Load Game** (see
+//! [`crate::save`]), and an **Options** screen (window mode). During play, `Esc` (or the
+//! gamepad `Select` button) toggles a [`Paused`] overlay (Continue / **Character** /
+//! Options / Main Menu / Quit); **Character** opens a read-only stat sheet and
+//! **Options** the same window-mode settings. Gameplay is frozen while paused (the
+//! gameplay [`GameSet`](crate::GameSet) chain is gated on [`Paused::Running`]).
+//!
+//! The window-mode choice (windowed / borderless fullscreen) persists via
+//! [`crate::save::Settings`] and is applied to the primary window by `apply_window_mode`.
 //!
 //! Menus are drawn the lightweight way the world map is — a backdrop sprite plus
 //! `Text2d` rows around the camera — and navigated with the arrows / D-pad,
 //! confirmed with jump / `Enter` / `South`.
 
 use bevy::app::AppExit;
+use bevy::ecs::system::SystemParam;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
+use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 
 use crate::combat::{Energy, LostEnergy};
-use crate::save::{self, GameMode, SLOTS, Save};
+use crate::save::{self, GameMode, SLOTS, Save, Settings};
 use crate::state::GameState;
 use crate::stats::{Stats, character_lines};
 use crate::world::{
@@ -49,6 +54,8 @@ enum MenuScreen {
     ModeSelect(usize),
     /// Type a name for the new game in this slot/mode, then start.
     NameEntry(usize, GameMode),
+    /// Settings (window mode).
+    Options,
 }
 
 /// Which pause sub-screen is showing.
@@ -58,6 +65,8 @@ enum PauseScreen {
     Root,
     /// The read-only character status sheet.
     Character,
+    /// Settings (window mode).
+    Options,
 }
 
 /// The name being typed for a new game (in the [`MenuScreen::NameEntry`] screen).
@@ -66,6 +75,15 @@ struct NewGameName(String);
 
 /// Max length of a save name.
 const NAME_MAX: usize = 20;
+
+/// Read-only resources for the character sheet, bundled so the pause system stays under
+/// Bevy's parameter limit.
+#[derive(SystemParam)]
+struct CharInfo<'w> {
+    stats: Res<'w, Stats>,
+    energy: Res<'w, Energy>,
+    lost: Res<'w, LostEnergy>,
+}
 
 /// Tags every entity that makes up a menu (despawned when it closes or redraws).
 #[derive(Component)]
@@ -95,18 +113,40 @@ enum MenuAction {
     Character,
     /// Open the level builder (Builder saves only).
     OpenEditor,
+    /// Open the settings screen.
+    OpenOptions,
+    /// Set the window mode (true = borderless fullscreen).
+    SetFullscreen(bool),
     /// Leave a paused game back to the title screen.
     MainMenu,
     Quit,
 }
 
-fn main_menu_items(screen: MenuScreen) -> Vec<(String, MenuAction)> {
+/// The settings rows, marking the active window mode.
+fn options_items(settings: &Settings) -> Vec<(String, MenuAction)> {
+    let mark = |on: bool| if on { "[x]" } else { "[ ]" };
+    vec![
+        (
+            format!("{} Windowed", mark(!settings.fullscreen)),
+            MenuAction::SetFullscreen(false),
+        ),
+        (
+            format!("{} Fullscreen (borderless)", mark(settings.fullscreen)),
+            MenuAction::SetFullscreen(true),
+        ),
+        ("Back".to_string(), MenuAction::Back),
+    ]
+}
+
+fn main_menu_items(screen: MenuScreen, settings: &Settings) -> Vec<(String, MenuAction)> {
     match screen {
         MenuScreen::Main => vec![
             ("New Game".to_string(), MenuAction::NewGame),
             ("Load Game".to_string(), MenuAction::LoadGame),
+            ("Options".to_string(), MenuAction::OpenOptions),
             ("Quit".to_string(), MenuAction::Quit),
         ],
+        MenuScreen::Options => options_items(settings),
         MenuScreen::NewSlots | MenuScreen::LoadSlots => {
             let mut items: Vec<(String, MenuAction)> = (0..SLOTS)
                 .map(|i| (slot_label(i), MenuAction::PickSlot(i)))
@@ -162,6 +202,7 @@ fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
     if builder {
         items.push(("Edit Levels".to_string(), MenuAction::OpenEditor));
     }
+    items.push(("Options".to_string(), MenuAction::OpenOptions));
     items.push(("Main Menu".to_string(), MenuAction::MainMenu));
     items.push(("Quit".to_string(), MenuAction::Quit));
     items
@@ -175,6 +216,7 @@ fn menu_title(screen: MenuScreen) -> &'static str {
         MenuScreen::ConfirmNew(_) => "OVERWRITE SAVE?",
         MenuScreen::ModeSelect(_) => "CHOOSE MODE",
         MenuScreen::NameEntry(..) => "NAME YOUR SAVE",
+        MenuScreen::Options => "OPTIONS",
     }
 }
 
@@ -207,7 +249,30 @@ impl Plugin for MenuPlugin {
             )
             .add_systems(OnEnter(Paused::Paused), spawn_pause_menu)
             .add_systems(OnExit(Paused::Paused), despawn_menu)
-            .add_systems(Update, pause_menu_update.run_if(in_state(Paused::Paused)));
+            .add_systems(Update, pause_menu_update.run_if(in_state(Paused::Paused)))
+            // Apply the window-mode preference whenever it changes (and once on startup).
+            .add_systems(
+                Update,
+                apply_window_mode.run_if(resource_changed::<Settings>),
+            );
+    }
+}
+
+/// Push the [`Settings`] window mode onto the primary window (windowed ↔ borderless).
+fn apply_window_mode(
+    settings: Res<Settings>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    let mode = if settings.fullscreen {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+    } else {
+        WindowMode::Windowed
+    };
+    if window.mode != mode {
+        window.mode = mode;
     }
 }
 
@@ -215,11 +280,12 @@ fn spawn_main_menu(
     mut commands: Commands,
     mut cursor: ResMut<MenuCursor>,
     mut screen: ResMut<MenuScreen>,
+    settings: Res<Settings>,
     camera: Query<&Transform, With<Camera2d>>,
 ) {
     *screen = MenuScreen::Main;
     cursor.0 = 0;
-    let items = main_menu_items(*screen);
+    let items = main_menu_items(*screen, &settings);
     draw_menu(
         &mut commands,
         camera_center(&camera),
@@ -274,12 +340,13 @@ fn redraw_main(
     commands: &mut Commands,
     menu: &Query<Entity, With<MenuEntity>>,
     screen: MenuScreen,
+    settings: &Settings,
     camera: &Query<&Transform, With<Camera2d>>,
 ) {
     for entity in menu.iter() {
         commands.entity(entity).despawn();
     }
-    let items = main_menu_items(screen);
+    let items = main_menu_items(screen, settings);
     draw_menu(
         commands,
         camera_center(camera),
@@ -357,6 +424,7 @@ fn main_menu_update(
     mut pending: ResMut<PendingSpawn>,
     mut level_root: ResMut<LevelRoot>,
     mut game_state: ResMut<NextState<GameState>>,
+    mut settings: ResMut<Settings>,
     mut exit: MessageWriter<AppExit>,
 ) {
     // Always drain typed keys so none are stale when name entry begins.
@@ -386,7 +454,7 @@ fn main_menu_update(
                 Key::Escape => {
                     *screen = MenuScreen::ModeSelect(slot);
                     cursor.0 = 0;
-                    redraw_main(&mut commands, &menu, *screen, &camera);
+                    redraw_main(&mut commands, &menu, *screen, &settings, &camera);
                     return;
                 }
                 Key::Backspace => {
@@ -415,7 +483,7 @@ fn main_menu_update(
         return;
     }
 
-    let items = main_menu_items(*screen);
+    let items = main_menu_items(*screen, &settings);
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
     };
@@ -427,12 +495,12 @@ fn main_menu_update(
         MenuAction::NewGame => {
             *screen = MenuScreen::NewSlots;
             cursor.0 = 0;
-            redraw_main(&mut commands, &menu, *screen, &camera);
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
         }
         MenuAction::LoadGame => {
             *screen = MenuScreen::LoadSlots;
             cursor.0 = 0;
-            redraw_main(&mut commands, &menu, *screen, &camera);
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
         }
         MenuAction::Back => {
             // Step back one level: mode-pick / overwrite-confirm → slots; else top.
@@ -441,7 +509,7 @@ fn main_menu_update(
                 _ => MenuScreen::Main,
             };
             cursor.0 = 0;
-            redraw_main(&mut commands, &menu, *screen, &camera);
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
         }
         MenuAction::PickSlot(slot) => match *screen {
             MenuScreen::NewSlots => {
@@ -454,7 +522,7 @@ fn main_menu_update(
                     *screen = MenuScreen::ModeSelect(slot);
                     cursor.0 = 0;
                 }
-                redraw_main(&mut commands, &menu, *screen, &camera);
+                redraw_main(&mut commands, &menu, *screen, &settings, &camera);
             }
             MenuScreen::LoadSlots => {
                 // Only act on a slot that actually has a save.
@@ -484,7 +552,7 @@ fn main_menu_update(
                 // Confirmed the overwrite — choose the mode next.
                 *screen = MenuScreen::ModeSelect(slot);
                 cursor.0 = 0;
-                redraw_main(&mut commands, &menu, *screen, &camera);
+                redraw_main(&mut commands, &menu, *screen, &settings, &camera);
             }
         }
         MenuAction::PickMode(mode) => {
@@ -494,6 +562,16 @@ fn main_menu_update(
                 name_buf.0.clear();
                 draw_name_entry(&mut commands, &menu, &camera, &name_buf.0);
             }
+        }
+        MenuAction::OpenOptions => {
+            *screen = MenuScreen::Options;
+            cursor.0 = 0;
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
+        }
+        MenuAction::SetFullscreen(fs) => {
+            settings.fullscreen = fs;
+            save::write_settings(&settings);
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
         }
         MenuAction::Quit => {
             exit.write(AppExit::Success);
@@ -517,19 +595,19 @@ fn pause_menu_update(
     menu: Query<Entity, With<MenuEntity>>,
     camera: Query<&Transform, With<Camera2d>>,
     save: Res<Save>,
-    stats: Res<Stats>,
-    energy: Res<Energy>,
-    lost: Res<LostEnergy>,
+    info: CharInfo,
+    mut settings: ResMut<Settings>,
     mut next: ResMut<NextState<Paused>>,
     mut game_state: ResMut<NextState<GameState>>,
     mut exit: MessageWriter<AppExit>,
     mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
     let builder = save.mode == GameMode::Builder;
-    // The Character sub-screen offers only "Back"; the root offers the full list.
+    // The Character/Options sub-screens have their own rows; the root has the full list.
     let items = match *screen {
         PauseScreen::Root => pause_menu_items(builder),
         PauseScreen::Character => vec![("Back".to_string(), MenuAction::Back)],
+        PauseScreen::Options => options_items(&settings),
     };
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
@@ -545,9 +623,10 @@ fn pause_menu_update(
                 &camera,
                 *screen,
                 builder,
-                &stats,
-                &energy,
-                &lost,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
             );
         }
         Some(MenuAction::Back) => {
@@ -559,9 +638,40 @@ fn pause_menu_update(
                 &camera,
                 *screen,
                 builder,
-                &stats,
-                &energy,
-                &lost,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
+            );
+        }
+        Some(MenuAction::OpenOptions) => {
+            *screen = PauseScreen::Options;
+            cursor.0 = 0;
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                builder,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
+            );
+        }
+        Some(MenuAction::SetFullscreen(fs)) => {
+            settings.fullscreen = fs;
+            save::write_settings(&settings);
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                builder,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
             );
         }
         Some(MenuAction::OpenEditor) => {
@@ -591,6 +701,7 @@ fn redraw_pause(
     stats: &Stats,
     energy: &Energy,
     lost: &LostEnergy,
+    settings: &Settings,
 ) {
     for entity in menu.iter() {
         commands.entity(entity).despawn();
@@ -605,6 +716,14 @@ fn redraw_pause(
         ),
         PauseScreen::Character => {
             draw_character_sheet(commands, center, &character_lines(stats, energy, lost));
+        }
+        PauseScreen::Options => {
+            draw_menu(
+                commands,
+                center,
+                "OPTIONS",
+                &labels(&options_items(settings)),
+            );
         }
     }
 }

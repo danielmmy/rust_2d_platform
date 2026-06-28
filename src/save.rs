@@ -172,6 +172,41 @@ pub fn write_save(save: &Save) {
     let _ = std::fs::write(slot_path(save.slot), save.to_ron());
 }
 
+/// Global settings, independent of any save slot (currently just the window mode).
+#[derive(Resource, Clone, Copy, Default)]
+pub struct Settings {
+    /// Borderless fullscreen when `true`, windowed when `false`.
+    pub fullscreen: bool,
+}
+
+const SETTINGS_PATH: &str = "saves/settings.ron";
+
+/// Load global settings from disk (defaults if missing or unparsable).
+pub fn read_settings() -> Settings {
+    let Ok(text) = std::fs::read_to_string(SETTINGS_PATH) else {
+        return Settings::default();
+    };
+    match ron::from_str(&text) {
+        Ok(v) => Settings {
+            fullscreen: v
+                .try_field("fullscreen")
+                .and_then(|x| x.as_i32().ok())
+                .unwrap_or(0)
+                != 0,
+        },
+        Err(_) => Settings::default(),
+    }
+}
+
+/// Persist global settings (creating `saves/` if needed).
+pub fn write_settings(settings: &Settings) {
+    let _ = std::fs::create_dir_all(SAVES_DIR);
+    let _ = std::fs::write(
+        SETTINGS_PATH,
+        format!("(fullscreen: {})\n", i32::from(settings.fullscreen)),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

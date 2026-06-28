@@ -26,8 +26,8 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | World map | `M` | `Start` |
 | Pause | `Esc` | `Select` |
 
-The game opens on a **main menu** (New Game / Load Game / Quit). **New Game** and
-**Load Game** open a **ten-slot** picker (each labelled with its `[Story]` or
+The game opens on a **main menu** (New Game / Load Game / **Options** / Quit). **New Game**
+and **Load Game** open a **ten-slot** picker (each labelled with its `[Story]` or
 `[Builder]` type) — pick a slot to load, or to start fresh. A new game asks you to
 **choose a mode**, then (after confirming any overwrite) **type a name** for the save:
 
@@ -36,8 +36,12 @@ The game opens on a **main menu** (New Game / Load Game / Quit). **New Game** an
   resize, add, delete, and relink rooms at will (see [Level builder](#level-builder)),
   and your edits stay in that save only.
 
+**Options** (from the main menu or the pause menu) chooses the **window mode** —
+**Windowed** or **Fullscreen (borderless)** — applied instantly and remembered across
+launches (saved to `saves/settings.ron`).
+
 During play, **`Esc`** (or `Select`) brings up a **pause menu** (Continue /
-**Character** / **Edit Levels** / **Main Menu** / Quit); **Character** opens a
+**Character** / **Edit Levels** / **Options** / **Main Menu** / Quit); **Character** opens a
 read-only stat sheet sub-screen (the same one `C` shows), and **Edit Levels** (Builder
 saves only) opens the builder. Menus are navigated with up/down and confirmed with
 jump / `Enter`.
@@ -181,7 +185,7 @@ The structure is plugin-per-concern:
 | [`save`](src/save.rs) | Ten-slot save system (mode + room + bench + progression), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
-| [`menu`](src/menu.rs) | Main menu (mode + slot picker) + pause menu (`Esc`); `MainMenu`/`Paused` states. |
+| [`menu`](src/menu.rs) | Main menu (mode + slot picker) + pause menu (`Esc`) + Options (window mode); `MainMenu`/`Paused` states. |
 | [`editor`](src/editor.rs) | Level builder (`F2` / pause **Edit Levels**, Builder saves): a tile view + a room-manager map. |
 
 The crate's **only dependency is `bevy`** — the maps are `.map.ron` files read by
@@ -410,6 +414,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — Added an **Options** menu (main menu + pause) to choose the **window
+  mode** — windowed or **borderless fullscreen** — applied live and persisted to
+  `saves/settings.ron` (new [`Settings`](src/save.rs), loaded at startup and pushed to the
+  window by `apply_window_mode`).
 - **2026-06-28** — Reworked **scenery** to be mix-and-match and more Silksong-like. Each room
   now picks a set **per layer** (`scenery: (far:…, mid:…, near:…, fg:…)`), so backdrops blend;
   the builder edits a layer with **`V`** and its set with **`C`**. The **fg** is now a real

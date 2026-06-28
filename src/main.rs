@@ -27,13 +27,22 @@ mod world;
 mod worldmap;
 
 use bevy::prelude::*;
-use bevy::window::WindowResolution;
+use bevy::window::{MonitorSelection, WindowMode, WindowResolution};
 
 use menu::Paused;
 use save::Save;
 use state::GameState;
 use stats::CharMenu;
 use worldmap::MapView;
+
+/// The Bevy window mode for a [`Settings`] choice.
+fn window_mode(fullscreen: bool) -> WindowMode {
+    if fullscreen {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+    } else {
+        WindowMode::Windowed
+    }
+}
 
 /// Per-frame ordering of the gameplay systems.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -46,6 +55,8 @@ pub enum GameSet {
 }
 
 fn main() {
+    // Load the window-mode preference before the window is created (avoids a flash).
+    let settings = save::read_settings();
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -53,6 +64,7 @@ fn main() {
                 primary_window: Some(Window {
                     title: "Wisp — a tiny Metroidvania".into(),
                     resolution: WindowResolution::new(960, 540),
+                    mode: window_mode(settings.fullscreen),
                     ..default()
                 }),
                 ..default()
@@ -61,6 +73,7 @@ fn main() {
             .set(ImagePlugin::default_nearest()),
     )
     .insert_resource(ClearColor(Color::srgb(0.07, 0.08, 0.12)))
+    .insert_resource(settings)
     .init_resource::<Save>()
     .init_state::<GameState>()
     .configure_sets(
