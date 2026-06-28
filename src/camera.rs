@@ -15,8 +15,9 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::GameSet;
+use crate::input::PlayerIntent;
 use crate::menu::Paused;
-use crate::player::Player;
+use crate::player::{JumpState, Player, Velocity};
 use crate::state::GameState;
 use crate::world::RoomView;
 use crate::worldmap::MapView;
@@ -24,14 +25,29 @@ use crate::worldmap::MapView;
 /// Half the 960×540 viewport at scale 1, in world units (1 unit = 1 logical px).
 const VIEW_HALF: Vec2 = Vec2::new(480.0, 270.0);
 
+/// How far the camera pans when looking up / crouching (world px), and how long Up/Down
+/// must be held first (so a tap doesn't jolt the view).
+const LOOK_DISTANCE: f32 = 130.0;
+const LOOK_DELAY: f32 = 0.4;
+
 #[derive(Component)]
 pub(crate) struct GameCamera;
+
+/// Eased vertical look-offset state for the up/down camera pan.
+#[derive(Resource, Default)]
+pub(crate) struct LookPan {
+    /// Seconds Up/Down has been held (past [`LOOK_DELAY`] the pan engages).
+    hold: f32,
+    /// Current eased offset added to the camera's focus (clamped to the room).
+    offset: f32,
+}
 
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera)
+        app.init_resource::<LookPan>()
+            .add_systems(Startup, spawn_camera)
             .add_systems(Update, follow.in_set(GameSet::Camera))
             // Keep the render area letterboxed to 16:9 at any window size/aspect.
             .add_systems(Update, letterbox)
@@ -89,18 +105,22 @@ fn clamp_to_room(target: Vec2, room: Vec2, half: Vec2) -> Vec2 {
     )
 }
 
+#[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
 pub(crate) fn follow(
     time: Res<Time>,
+    intent: Res<PlayerIntent>,
     mut room_view: ResMut<RoomView>,
-    player: Query<&Transform, (With<Player>, Without<GameCamera>)>,
+    mut look: ResMut<LookPan>,
+    player: Query<(&Transform, &JumpState, &Velocity), (With<Player>, Without<GameCamera>)>,
     mut camera: Query<(&mut Transform, &mut Projection), With<GameCamera>>,
 ) {
-    let Ok(player_tf) = player.single() else {
+    let Ok((player_tf, jump, velocity)) = player.single() else {
         return;
     };
     let Ok((mut camera_tf, mut projection)) = camera.single_mut() else {
         return;
     };
+    let dt = time.delta_secs();
 
     let room = room_view.size;
     let scale = fit_scale(room);
@@ -108,13 +128,31 @@ pub(crate) fn follow(
         ortho.scale = scale;
     }
 
-    let desired = clamp_to_room(player_tf.translation.truncate(), room, VIEW_HALF * scale);
+    // Look up / down: hold Up or Down while grounded and still to pan the view (clamped to
+    // the room by `clamp_to_room`), after a short delay so taps don't jolt it.
+    let look_dir = if jump.grounded() && velocity.0.x.abs() < 12.0 {
+        f32::from(intent.up) - f32::from(intent.down)
+    } else {
+        0.0
+    };
+    look.hold = if look_dir != 0.0 { look.hold + dt } else { 0.0 };
+    let target_off = if look.hold >= LOOK_DELAY {
+        look_dir * LOOK_DISTANCE
+    } else {
+        0.0
+    };
+    look.offset += (target_off - look.offset) * (4.0 * dt).min(1.0);
+
+    let focus = player_tf.translation.truncate() + Vec2::new(0.0, look.offset);
+    let desired = clamp_to_room(focus, room, VIEW_HALF * scale);
     let current = camera_tf.translation.truncate();
     let next = if room_view.snap {
         room_view.snap = false;
-        desired
+        look.offset = 0.0; // don't carry a look-pan across a room change
+        look.hold = 0.0;
+        clamp_to_room(player_tf.translation.truncate(), room, VIEW_HALF * scale)
     } else {
-        current.lerp(desired, (8.0 * time.delta_secs()).min(1.0))
+        current.lerp(desired, (8.0 * dt).min(1.0))
     };
     camera_tf.translation.x = next.x;
     camera_tf.translation.y = next.y;

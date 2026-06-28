@@ -106,12 +106,14 @@ fn update_rocks(
 
 fn hazard_contact(
     invuln: Res<Invuln>,
+    grace: Res<crate::combat::PogoGrace>,
     hazards: Query<(&Transform, &Hazard), Without<Player>>,
     player: Query<&Transform, With<Player>>,
     mut hurt: MessageWriter<Hurt>,
 ) {
-    // Skip while invulnerable, so one touch costs a single heart.
-    if invuln.0 > 0.0 {
+    // Skip while invulnerable (so one touch costs a single heart) or during the brief
+    // grace after a pogo (so bouncing across spikes is safe).
+    if invuln.0 > 0.0 || grace.0 > 0.0 {
         return;
     }
     let Ok(player_tf) = player.single() else {

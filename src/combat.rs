@@ -473,10 +473,15 @@ const SWING_ACTIVE: f32 = 0.12;
 /// Deliberately generous (a wide arc, à la Silksong's nail) so swings feel forgiving.
 const HIT_REACH: f32 = 24.0;
 const HIT_HALF: Vec2 = Vec2::new(28.0, 26.0);
-/// How far **below** the player a down-slash hitbox sits (the pogo strike).
-const HIT_DOWN_REACH: f32 = 26.0;
-/// Upward bounce speed when a down-slash connects (Hollow-Knight pogo).
-const POGO_SPEED: f32 = 360.0;
+/// How far **below** the player a down-slash hitbox sits (the pogo strike). A bit beyond
+/// the feet so you can bounce a spike/enemy *before* your body touches it.
+const HIT_DOWN_REACH: f32 = 30.0;
+/// Upward bounce speed when a down-slash connects (Hollow-Knight pogo) — strong enough to
+/// gain real height and chain across hazards.
+const POGO_SPEED: f32 = 540.0;
+/// Seconds of hazard immunity granted by a successful pogo, so bouncing across a spike pit
+/// never costs a heart even on a slightly late strike. Separate from i-frames (no flash).
+const POGO_GRACE: f32 = 0.3;
 /// How long a slash sprite lingers.
 const SLASH_TIME: f32 = 0.12;
 
@@ -501,6 +506,11 @@ struct Sword {
 #[derive(Component)]
 struct Slash(f32);
 
+/// Seconds of hazard immunity remaining after a pogo (read by [`crate::hazards`]). Lets a
+/// down-slash carry you across spikes safely; unlike i-frames it shows no damage flash.
+#[derive(Resource, Default)]
+pub(crate) struct PogoGrace(pub f32);
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // a Bevy system; distinct params
 fn player_attack(
     time: Res<Time>,
@@ -509,6 +519,7 @@ fn player_attack(
     stats: Res<Stats>,
     fight: Res<BossFight>,
     mut sword: ResMut<Sword>,
+    mut grace: ResMut<PogoGrace>,
     mut commands: Commands,
     mut sfx: MessageWriter<PlaySfx>,
     mut player: Query<(&Transform, &Sprite, &mut Velocity, &mut JumpState), With<Player>>,
@@ -520,6 +531,7 @@ fn player_attack(
     sword.cooldown = (sword.cooldown - dt).max(0.0);
     sword.combo_window = (sword.combo_window - dt).max(0.0);
     sword.active = (sword.active - dt).max(0.0);
+    grace.0 = (grace.0 - dt).max(0.0);
     if sword.combo_window <= 0.0 {
         sword.step = 0; // window lapsed → combo resets
     }
@@ -645,6 +657,7 @@ fn player_attack(
                 velocity.0.y = POGO_SPEED;
                 jump.start_pogo();
                 sword.pogoed = true;
+                grace.0 = POGO_GRACE; // brief hazard immunity so spike pogos are safe
                 sfx.write(PlaySfx(Sfx::Jump));
             }
         }
@@ -721,6 +734,7 @@ impl Plugin for CombatPlugin {
         app.init_resource::<Energy>()
             .init_resource::<LostEnergy>()
             .init_resource::<Sword>()
+            .init_resource::<PogoGrace>()
             .add_systems(OnEnter(GameState::Playing), spawn_energy_hud)
             .add_systems(OnExit(GameState::Playing), despawn_energy_hud)
             .add_systems(Update, enemy_ai.in_set(GameSet::Movement))
