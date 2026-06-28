@@ -32,11 +32,13 @@ pub enum Sfx {
     EnemyHit,
     Hurt,
     Pickup,
+    /// Save/rest jingle (resting at a bench saves & restores).
+    Save,
 }
 
 impl Sfx {
     /// Every effect paired with its embedded file name (without the `.ogg`).
-    const ALL: [(Sfx, &'static str); 10] = [
+    const ALL: [(Sfx, &'static str); 11] = [
         (Sfx::Footstep, "footstep"),
         (Sfx::Jump, "jump"),
         (Sfx::DoubleJump, "double_jump"),
@@ -47,6 +49,7 @@ impl Sfx {
         (Sfx::EnemyHit, "enemy_hit"),
         (Sfx::Hurt, "hurt"),
         (Sfx::Pickup, "pickup"),
+        (Sfx::Save, "save"),
     ];
 }
 

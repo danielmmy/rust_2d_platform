@@ -453,7 +453,7 @@ binary** (Bevy plays OGG via its default `vorbis` feature). Two volumes — **FX
 `python3 tools/gen_sfx.py` to regenerate after tweaking the recipes. To add one: add a recipe,
 a [`Sfx`](src/audio.rs) variant + file name, and fire `PlaySfx(Sfx::Yours)` from a system.
 Wired: footsteps, jump, double-jump, wall-jump, land, slash, the combo finisher, enemy/boss
-hit, taking damage, and energy pickup.
+hit, taking damage, energy pickup, and a **save jingle** when you rest at a bench.
 
 **Music** lives in `assets/music/<theme>.ogg` — one looping track per theme set, real
 **CC0 / public-domain** songs from [OpenGameArt](https://opengameart.org) (down-mixed to mono
@@ -474,6 +474,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — Resting at a bench now plays a short **save jingle** (an ascending
+  C-major arpeggio) as audible confirmation that the game saved & restored
+  ([`audio`](src/audio.rs) `Sfx::Save`, synthesised in [`tools/gen_sfx.py`](tools/gen_sfx.py);
+  fired from the bench *Rest* action in [`stats`](src/stats.rs)).
 - **2026-06-28** — **Controls + moveset.** Jump is now a **dedicated button** (`Space` /
   south) — `↑` no longer jumps ([`input`](src/input.rs)). Holding **Up** **looks up** and
   **Down** **crouches**, each with its own pose (player sheet extended to **6×6**, new rows

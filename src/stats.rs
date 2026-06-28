@@ -16,6 +16,7 @@
 
 use bevy::prelude::*;
 
+use crate::audio::{PlaySfx, Sfx};
 use crate::combat::{Energy, LostEnergy};
 use crate::health::Health;
 use crate::menu::Paused;
@@ -413,6 +414,7 @@ fn update_overlay(
     mut arenas: ResMut<crate::boss::ClearedArenas>,
     mut next: ResMut<NextState<CharMenu>>,
     mut load: MessageWriter<LoadMap>,
+    mut sfx: MessageWriter<PlaySfx>,
     mut lines: Query<(&Line, &mut Text2d, &mut TextColor)>,
 ) {
     let options = choices(*mode);
@@ -462,6 +464,8 @@ fn update_overlay(
                         map: current.name.clone(),
                         entry: Entry::Bench(col, row),
                     });
+                    // A little jingle confirming the save (& restore).
+                    sfx.write(PlaySfx(Sfx::Save));
                 }
                 next.set(CharMenu::Closed);
                 return;

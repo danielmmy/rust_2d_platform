@@ -105,8 +105,18 @@ def write_ogg(name, buf):
             v = max(-1.0, min(1.0, v))
             frames += struct.pack("<h", int(v * 32767))
         w.writeframes(frames)
+    # `-bitexact` makes the encode reproducible: without it ffmpeg stamps every Ogg file with
+    # a random stream serial number (in the page header), so re-running would rewrite all the
+    # .ogg files with byte differences even though the audio is identical — noisy git diffs.
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", wav, "-c:a", "libvorbis", "-qscale:a", "5", ogg],
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-fflags", "+bitexact", "-flags", "+bitexact",
+            "-i", wav,
+            "-c:a", "libvorbis", "-qscale:a", "5",
+            "-fflags", "+bitexact",
+            ogg,
+        ],
         check=True,
     )
     os.remove(wav)
@@ -166,6 +176,12 @@ SOUNDS = {
         tone(990.0, 0.12, vol=0.30, wave="sine", decay=6.0),
         0.07,
     )),
+    # Save/rest jingle: a bright ascending C-major arpeggio (C-E-G-C) resolving high.
+    "save": lambda: finalize(at(at(at(
+        tone(523.25, 0.26, vol=0.26, wave="sine", decay=6.0),
+        tone(659.25, 0.26, vol=0.26, wave="sine", decay=6.0), 0.09),
+        tone(783.99, 0.26, vol=0.26, wave="sine", decay=6.0), 0.18),
+        tone(1046.5, 0.42, vol=0.30, wave="sine", decay=3.6), 0.27)),
 }
 
 
