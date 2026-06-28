@@ -138,6 +138,82 @@ pub fn resolve_platforms_y(
     (blocked, landed)
 }
 
+/// Whether the AABB is supported from directly below — static ground just under the feet,
+/// or a platform top within [`CARRY_EPS`]. Used to tell a *squish* (no room to escape down)
+/// apart from a platform merely pressing a falling player downward.
+pub fn supported_below(solids: &Solids, platforms: &Platforms, center: Vec2, half: Vec2) -> bool {
+    let feet = center.y - half.y;
+    let row = to_tile(feet - EPS);
+    let col0 = to_tile(center.x - half.x + EPS);
+    let col1 = to_tile(center.x + half.x - EPS);
+    if (col0..=col1).any(|col| solids.is_solid(col, row)) {
+        return true;
+    }
+    platforms.0.iter().any(|b| {
+        (center.x - b.center.x).abs() < half.x + b.half.x
+            && (feet - (b.center.y + b.half.y)).abs() <= CARRY_EPS
+    })
+}
+
+/// Whether an AABB centred at `(x, center.y)` would overlap a static solid (used to avoid
+/// shoving a squished player straight into a wall).
+fn aabb_in_solid(solids: &Solids, x: f32, y: f32, half: Vec2) -> bool {
+    let row0 = to_tile(y - half.y + EPS);
+    let row1 = to_tile(y + half.y - EPS);
+    let col0 = to_tile(x - half.x + EPS);
+    let col1 = to_tile(x + half.x - EPS);
+    (row0..=row1).any(|row| (col0..=col1).any(|col| solids.is_solid(col, row)))
+}
+
+/// Detect a **squish**: a *descending* platform (`delta.y < 0`) whose underside has pressed
+/// down *into* the player's body (between the feet and head — i.e. not one the player is
+/// riding on top of), overlapping in X. If so, return the x to shove the player to — out a
+/// side of the whole squishing span — and that span's centre (a knockback source). The nearer
+/// side is preferred, but a side walled off by static tiles is avoided where possible.
+///
+/// The caller should only act on this when the player is [`supported_below`]; otherwise a
+/// platform landing on an airborne player would shove them sideways instead of letting them
+/// be pushed down.
+pub fn squish_push_x(
+    solids: &Solids,
+    platforms: &Platforms,
+    center: Vec2,
+    half: Vec2,
+) -> Option<(f32, Vec2)> {
+    let (feet, head) = (center.y - half.y, center.y + half.y);
+    let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
+    let mut found = false;
+    for b in &platforms.0 {
+        if b.delta.y >= 0.0 || !overlaps(center, half, b) {
+            continue;
+        }
+        let p_bottom = b.center.y - b.half.y;
+        if p_bottom <= feet || p_bottom >= head {
+            continue; // resting on top (or no vertical bite) — not a squish
+        }
+        left = left.min(b.center.x - b.half.x);
+        right = right.max(b.center.x + b.half.x);
+        found = true;
+    }
+    if !found {
+        return None;
+    }
+    let group_center = (left + right) * 0.5;
+    let (out_left, out_right) = (left - half.x, right + half.x);
+    let prefer_left = center.x < group_center;
+    let left_ok = !aabb_in_solid(solids, out_left, center.y, half);
+    let right_ok = !aabb_in_solid(solids, out_right, center.y, half);
+    // Nearer side first; if it's walled and the other isn't, use the other. If both (or
+    // neither) are clear, keep the nearer one.
+    let new_x = match (prefer_left, left_ok, right_ok) {
+        (true, false, true) => out_right,
+        (false, true, false) => out_left,
+        (true, _, _) => out_left,
+        (false, _, _) => out_right,
+    };
+    Some((new_x, Vec2::new(group_center, center.y)))
+}
+
 /// Move an AABB (centre + half-extents) along X by `dx`, stopping at solids.
 /// Returns whether it was blocked.
 pub fn collide_x(solids: &Solids, center: &mut Vec2, half: Vec2, dx: f32) -> bool {
@@ -256,6 +332,75 @@ mod tests {
         let hit = resolve_platforms_x(&platforms, &mut center, Vec2::new(11.0, 19.0), 5.0);
         assert!(!hit, "a rider on top must not be pushed sideways");
         assert_eq!(center.x, 16.0);
+    }
+
+    #[test]
+    fn descending_platform_squishes_a_grounded_player() {
+        // Platform tile centred at (16, 40) (underside at y 24) coming down; player on the
+        // floor (feet 0, head 38), so the underside has bitten into the body → squish.
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(16.0, 40.0),
+            half: Vec2::splat(16.0),
+            delta: Vec2::new(0.0, -3.0),
+        }]);
+        let half = Vec2::new(11.0, 19.0);
+        let open = solids(&[]);
+        let (push_x, _src) =
+            squish_push_x(&open, &platforms, Vec2::new(16.0, 19.0), half).expect("squish");
+        // Player is at/!left-of the span centre → shoved out the right side (32 + 11).
+        assert!((push_x - 43.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn rider_on_descending_platform_is_not_squished() {
+        // Same descending platform, but the player rests on its top (feet just at the top) —
+        // the underside is below the feet, so it must not register as a squish.
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(16.0, 16.0),
+            half: Vec2::splat(16.0),
+            delta: Vec2::new(0.0, -3.0),
+        }]);
+        let half = Vec2::new(11.0, 19.0);
+        let open = solids(&[]);
+        assert!(squish_push_x(&open, &platforms, Vec2::new(16.0, 50.5), half).is_none());
+    }
+
+    #[test]
+    fn squish_pushes_away_from_a_wall() {
+        // Same descending squish, but a wall sits just left of the span — the player (nearer
+        // the left) must be shoved out the right instead of into the wall.
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(16.0, 40.0),
+            half: Vec2::splat(16.0),
+            delta: Vec2::new(0.0, -3.0),
+        }]);
+        let half = Vec2::new(11.0, 19.0);
+        let walled = solids(&[(-1, 0), (-1, 1)]);
+        let (push_x, _) =
+            squish_push_x(&walled, &platforms, Vec2::new(8.0, 19.0), half).expect("squish");
+        assert!(
+            (push_x - 43.0).abs() < 0.1,
+            "shoved right, away from the left wall"
+        );
+    }
+
+    #[test]
+    fn supported_below_sees_ground_not_air() {
+        let solids = solids(&[(0, 0)]); // floor tile [0,32]×[0,32]
+        let empty = Platforms(vec![]);
+        let half = Vec2::new(11.0, 19.0);
+        assert!(supported_below(
+            &solids,
+            &empty,
+            Vec2::new(16.0, 51.0),
+            half
+        )); // feet on top
+        assert!(!supported_below(
+            &solids,
+            &empty,
+            Vec2::new(16.0, 59.0),
+            half
+        )); // floating
     }
 
     #[test]

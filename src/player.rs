@@ -16,7 +16,7 @@
 use bevy::prelude::*;
 
 use crate::GameSet;
-use crate::health::Stun;
+use crate::health::{Hurt, Stun};
 use crate::input::PlayerIntent;
 use crate::physics::{self, Platforms, Solids};
 use crate::save::Save;
@@ -140,6 +140,7 @@ pub(crate) fn movement(
     platforms: Res<Platforms>,
     stun: Res<Stun>,
     abilities: Res<Abilities>,
+    mut hurt: MessageWriter<Hurt>,
     mut query: Query<(&mut Transform, &mut Velocity, &mut JumpState, &mut Sprite), With<Player>>,
 ) {
     let dt = time.delta_secs();
@@ -280,6 +281,18 @@ pub(crate) fn movement(
 
         let dy = velocity.0.y * dt;
         let (sb, sl) = physics::collide_y(&solids, &mut center, PLAYER_HALF, dy);
+
+        // Squish: a descending platform pressing the player down while they're supported from
+        // below. Rather than clipping them up onto its top, shove them out the nearer side and
+        // hurt them (i-frames mean repeated frames count as one hit).
+        if physics::supported_below(&solids, &platforms, center, PLAYER_HALF)
+            && let Some((push_x, src)) =
+                physics::squish_push_x(&solids, &platforms, center, PLAYER_HALF)
+        {
+            center.x = push_x;
+            hurt.write(Hurt::From(src));
+        }
+
         let (pb, pl) = physics::resolve_platforms_y(&platforms, &mut center, PLAYER_HALF, dy);
         if sb || pb {
             velocity.0.y = 0.0;

@@ -435,6 +435,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — Movers can now **crush** the player ([`physics`](src/physics.rs) +
+  [`player`](src/player.rs)). A platform descending onto someone standing on the ground used
+  to clip them up through it; now, when a falling platform's underside bites into a player who
+  has no room below, they're **shoved out the nearer open side** (away from walls) and **take
+  a hit** (knockback + i-frames), instead of teleporting to its top.
 - **2026-06-28** — Fixed a **mover riding** bug ([`physics`](src/physics.rs)): walking on a
   moving platform could occasionally **teleport** the player to its side. The X-collision
   pass now ignores a platform the player is resting on top of (the carry can sink the feet a
