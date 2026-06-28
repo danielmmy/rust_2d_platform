@@ -4,9 +4,10 @@
 //! the main list, a save-slot picker for **New Game** / **Load Game** (see
 //! [`crate::save`]), and an **Options** screen (window mode). During play, `Esc` (or the
 //! gamepad `Select` button) toggles a [`Paused`] overlay (Continue / **Character** /
-//! Options / Main Menu / Quit); **Character** opens a read-only stat sheet and
-//! **Options** the same window-mode settings. Gameplay is frozen while paused (the
-//! gameplay [`GameSet`](crate::GameSet) chain is gated on [`Paused::Running`]).
+//! **Abilities** / Options / Main Menu / Quit); **Character** opens a read-only stat sheet,
+//! **Abilities** toggles unlocked abilities on/off, and **Options** the window-mode/volume
+//! settings. Gameplay is frozen while paused (the gameplay [`GameSet`](crate::GameSet) chain
+//! is gated on [`Paused::Running`]).
 //!
 //! The window-mode choice (windowed / borderless fullscreen) persists via
 //! [`crate::save::Settings`] and is applied to the primary window by `apply_window_mode`.
@@ -23,6 +24,7 @@ use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 
 use crate::combat::{Energy, LostEnergy};
+use crate::player::{Abilities, Ability};
 use crate::save::{self, GameMode, SLOTS, Save, Settings};
 use crate::state::GameState;
 use crate::stats::{Stats, character_lines};
@@ -67,6 +69,8 @@ enum PauseScreen {
     Character,
     /// Settings (window mode).
     Options,
+    /// Toggle abilities on/off (all of them in a Builder save; only acquired in Story).
+    Abilities,
 }
 
 /// The name being typed for a new game (in the [`MenuScreen::NameEntry`] screen).
@@ -115,6 +119,10 @@ enum MenuAction {
     OpenEditor,
     /// Open the settings screen.
     OpenOptions,
+    /// Open the abilities sub-screen.
+    OpenAbilities,
+    /// Toggle an ability on/off (grants/removes in a Builder save; flips active in Story).
+    ToggleAbility(Ability),
     /// Set the window mode (true = borderless fullscreen).
     SetFullscreen(bool),
     /// Cycle the sound-effects volume up one step (wrapping).
@@ -223,6 +231,7 @@ fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
     let mut items = vec![
         ("Continue".to_string(), MenuAction::Continue),
         ("Character".to_string(), MenuAction::Character),
+        ("Abilities".to_string(), MenuAction::OpenAbilities),
     ];
     if builder {
         items.push(("Edit Levels".to_string(), MenuAction::OpenEditor));
@@ -230,6 +239,32 @@ fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
     items.push(("Options".to_string(), MenuAction::OpenOptions));
     items.push(("Main Menu".to_string(), MenuAction::MainMenu));
     items.push(("Quit".to_string(), MenuAction::Quit));
+    items
+}
+
+/// The ability sub-screen's rows: all abilities in a Builder save (grant/remove), or just the
+/// acquired ones in a Story save (toggle active). Each shows `[x]`/`[ ]` from the live state.
+fn ability_items(builder: bool, abilities: &Abilities, save: &Save) -> Vec<(String, MenuAction)> {
+    let rows: Vec<Ability> = if builder {
+        Ability::ALL.to_vec()
+    } else {
+        let have = Abilities::from_csv(&save.abilities);
+        Ability::ALL.into_iter().filter(|a| have.has(*a)).collect()
+    };
+    let mut items: Vec<(String, MenuAction)> = rows
+        .into_iter()
+        .map(|a| {
+            let mark = if abilities.has(a) { "[x]" } else { "[ ]" };
+            (
+                format!("{mark} {}", a.label()),
+                MenuAction::ToggleAbility(a),
+            )
+        })
+        .collect();
+    if items.is_empty() {
+        items.push(("(none acquired yet)".to_string(), MenuAction::Back));
+    }
+    items.push(("Back".to_string(), MenuAction::Back));
     items
 }
 
@@ -269,8 +304,7 @@ impl Plugin for MenuPlugin {
                 toggle_pause.run_if(
                     in_state(GameState::Playing)
                         .and_then(in_state(MapView::Closed))
-                        .and_then(in_state(crate::stats::CharMenu::Closed))
-                        .and_then(in_state(crate::stats::AbilityMenu::Closed)),
+                        .and_then(in_state(crate::stats::CharMenu::Closed)),
                 ),
             )
             .add_systems(OnEnter(Paused::Paused), spawn_pause_menu)
@@ -614,6 +648,8 @@ fn main_menu_update(
         // Only produced by the pause menu, handled in `pause_menu_update`.
         MenuAction::Continue
         | MenuAction::Character
+        | MenuAction::OpenAbilities
+        | MenuAction::ToggleAbility(_)
         | MenuAction::OpenEditor
         | MenuAction::MainMenu => {}
     }
@@ -629,7 +665,8 @@ fn pause_menu_update(
     rows: Query<(&MenuItem, &mut TextColor)>,
     menu: Query<Entity, With<MenuEntity>>,
     camera: Query<&Transform, With<Camera2d>>,
-    save: Res<Save>,
+    mut save: ResMut<Save>,
+    mut abilities: ResMut<Abilities>,
     info: CharInfo,
     mut settings: ResMut<Settings>,
     mut next: ResMut<NextState<Paused>>,
@@ -638,11 +675,12 @@ fn pause_menu_update(
     mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
     let builder = save.mode == GameMode::Builder;
-    // The Character/Options sub-screens have their own rows; the root has the full list.
+    // The sub-screens have their own rows; the root has the full list.
     let items = match *screen {
         PauseScreen::Root => pause_menu_items(builder),
         PauseScreen::Character => vec![("Back".to_string(), MenuAction::Back)],
         PauseScreen::Options => options_items(&settings),
+        PauseScreen::Abilities => ability_items(builder, &abilities, &save),
     };
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
@@ -662,6 +700,8 @@ fn pause_menu_update(
                 &info.energy,
                 &info.lost,
                 &settings,
+                &abilities,
+                &save,
             );
         }
         Some(MenuAction::Back) => {
@@ -677,6 +717,8 @@ fn pause_menu_update(
                 &info.energy,
                 &info.lost,
                 &settings,
+                &abilities,
+                &save,
             );
         }
         Some(MenuAction::OpenOptions) => {
@@ -692,6 +734,48 @@ fn pause_menu_update(
                 &info.energy,
                 &info.lost,
                 &settings,
+                &abilities,
+                &save,
+            );
+        }
+        Some(MenuAction::OpenAbilities) => {
+            *screen = PauseScreen::Abilities;
+            cursor.0 = 0;
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                builder,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
+                &abilities,
+                &save,
+            );
+        }
+        Some(MenuAction::ToggleAbility(ability)) => {
+            // Builder: grant/remove (persisted). Story: flip the live "active" state of an
+            // already-acquired ability (the save's acquired set is untouched).
+            let on = !abilities.has(ability);
+            abilities.set(ability, on);
+            if builder {
+                save.abilities = abilities.to_csv();
+                save::write_save(&save);
+            }
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                builder,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
+                &abilities,
+                &save,
             );
         }
         Some(MenuAction::SetFullscreen(fs)) => {
@@ -707,6 +791,8 @@ fn pause_menu_update(
                 &info.energy,
                 &info.lost,
                 &settings,
+                &abilities,
+                &save,
             );
         }
         Some(action @ (MenuAction::StepFxVolume | MenuAction::StepMusicVolume)) => {
@@ -726,6 +812,8 @@ fn pause_menu_update(
                 &info.energy,
                 &info.lost,
                 &settings,
+                &abilities,
+                &save,
             );
         }
         Some(MenuAction::OpenEditor) => {
@@ -756,6 +844,8 @@ fn redraw_pause(
     energy: &Energy,
     lost: &LostEnergy,
     settings: &Settings,
+    abilities: &Abilities,
+    save: &Save,
 ) {
     for entity in menu.iter() {
         commands.entity(entity).despawn();
@@ -777,6 +867,14 @@ fn redraw_pause(
                 center,
                 "OPTIONS",
                 &labels(&options_items(settings)),
+            );
+        }
+        PauseScreen::Abilities => {
+            draw_menu(
+                commands,
+                center,
+                "ABILITIES",
+                &labels(&ability_items(builder, abilities, save)),
             );
         }
     }

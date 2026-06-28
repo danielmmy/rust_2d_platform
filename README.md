@@ -26,7 +26,6 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | **Pogo** (down-slash, once unlocked) | in the air, hold `↓` + `J` | in the air, hold down + `X` |
 | Interact / bench shop | `E` | `Y` (north) |
 | Character screen (view stats + abilities) | `C` | left bumper |
-| Ability menu (toggle on/off) | `B` | right stick (R3) |
 | World map | `M` | `Start` |
 | Pause | `Esc` | `Select` |
 
@@ -38,11 +37,12 @@ Jump is its **own button** (`Space` / south) — `↑` no longer jumps, so holdi
 **Abilities are earned.** A new game starts with only the **single jump** and **slash**;
 **double jump, wall jump, dash, and pogo** must each be unlocked — by **beating a boss** or
 **opening a chest** (a solid prop; walk up and press **`E`** — it pops open and stays open).
-The character screen (`C`) lists what you've acquired, and **`B`** opens an **ability menu**
-to toggle abilities on/off: in a **Story** save it lists only your **acquired** abilities
-(turn them on/off — you can't grant unearned ones); in a **Builder** save it lists **all**
-abilities and **grants/removes** them for testing. (Bosses give no reward by default; place
-chests / set boss rewards in the builder to hand them out — see [Level builder](#level-builder).)
+The character screen (`C`) lists what you've acquired, and the **pause menu** (`Esc`) has an
+**Abilities** sub-screen to toggle them on/off: in a **Story** save it lists only your
+**acquired** abilities (turn them on/off — you can't grant unearned ones); in a **Builder**
+save it lists **all** abilities and **grants/removes** them for testing. (Bosses give no
+reward by default; place chests / set boss rewards in the builder to hand them out — see
+[Level builder](#level-builder).)
 
 The game opens on a **main menu** (New Game / Load Game / **Options** / Quit). **New Game**
 and **Load Game** open a **ten-slot** picker (each labelled with its `[Story]` or
@@ -496,10 +496,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
-- **2026-06-28** — Added an in-play **ability menu** (**`B`** / right‑stick click;
-  [`stats`](src/stats.rs)). **Story** saves toggle only **acquired** abilities active/off;
-  **Builder** saves toggle **all** of them (grant/remove for testing, persisted). Opening it
-  freezes gameplay like the other menus. (The level builder's `Y` menu still works too.)
+- **2026-06-28** — Added an **Abilities** sub-screen to the **pause menu** ([`menu`](src/menu.rs)).
+  **Story** saves toggle only **acquired** abilities active/off; **Builder** saves toggle
+  **all** of them (grant/remove for testing, persisted). (The level builder's `Y` menu still
+  works too.)
 - **2026-06-28** — **Chests** are now **solid props you open with `E`** (was walk-over):
   walk up — an `[E] open` prompt shows — press `E` to take the ability; the chest swaps to an
   **open sprite** ([`chest_open.png`](assets/sprites/chest_open.png)) and stays open. In the

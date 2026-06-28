@@ -98,8 +98,7 @@ impl Plugin for WorldMapPlugin {
                 toggle_map.run_if(
                     in_state(GameState::Playing)
                         .and_then(in_state(Paused::Running))
-                        .and_then(in_state(crate::stats::CharMenu::Closed))
-                        .and_then(in_state(crate::stats::AbilityMenu::Closed)),
+                        .and_then(in_state(crate::stats::CharMenu::Closed)),
                 ),
             )
             .add_systems(OnEnter(MapView::Open), open_map)
