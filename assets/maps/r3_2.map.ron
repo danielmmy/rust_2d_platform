@@ -15,6 +15,7 @@
         (boss: 1, kind: 1, col: 30, row: 15),
     ],
     scenery: (far: "starry_void", mid: "starry_void", near: "starry_void", fg: "starry_void"),
+    music: "starry_void",
     bg: [0.32, 0.16, 0.24],
     tiles: [
         "########################################",

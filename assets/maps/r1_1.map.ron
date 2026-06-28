@@ -18,6 +18,7 @@
     ],
     fog_respawn: 1,
     scenery: (far: "mushroom_hollow", mid: "mushroom_hollow", near: "mushroom_hollow", fg: "mushroom_hollow"),
+    music: "mushroom_hollow",
     bg: [0.16, 0.32, 0.24],
     tiles: [
         "#########FF#############################",

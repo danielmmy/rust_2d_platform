@@ -236,6 +236,9 @@ pub struct MapData {
     pub movers: Vec<Mover>,
     /// Per-layer parallax scenery for this room (mix-and-match; see [`Scenery`]).
     pub scenery: Scenery,
+    /// Background-music track for this room: a name under `assets/music/` (one of the 12
+    /// theme sets), or empty for silence. Played looping by [`crate::audio`].
+    pub music: String,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -361,6 +364,11 @@ impl MapData {
             fog_respawn,
             movers,
             scenery: parse_scenery(value.try_field("scenery")),
+            music: value
+                .try_field("music")
+                .and_then(|v| v.as_str().ok())
+                .unwrap_or("")
+                .to_string(),
             bg,
             tiles,
         })
@@ -467,6 +475,7 @@ impl MapData {
              fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
              movers: [\n{movers}    ],\n    \
              scenery: (far: \"{}\", mid: \"{}\", near: \"{}\", fg: \"{}\"),\n    \
+             music: \"{}\",\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
@@ -477,6 +486,7 @@ impl MapData {
             self.scenery.mid,
             self.scenery.near,
             self.scenery.fg,
+            self.music,
             self.bg[0],
             self.bg[1],
             self.bg[2],
@@ -628,6 +638,9 @@ pub(crate) struct GameAssets {
 #[derive(Resource, Default)]
 pub(crate) struct CurrentRoom {
     pub(crate) name: String,
+    /// The room's background-music track name (see [`MapData::music`]); read by
+    /// [`crate::audio`] to play/switch the loop. Empty = silence.
+    pub(crate) music: String,
     north: Vec<Door>,
     south: Vec<Door>,
     east: Vec<Door>,
@@ -1240,6 +1253,7 @@ fn handle_load_map(
     // Record the room's name, doors + size for edge detection and the camera.
     *current = CurrentRoom {
         name: load.map.clone(),
+        music: map.music.clone(),
         north: map.north.clone(),
         south: map.south.clone(),
         east: map.east.clone(),
@@ -1652,6 +1666,7 @@ mod tests {
                 near: "forest_meadow".to_string(),
                 fg: "misty_swamp".to_string(),
             },
+            music: "deep_caves".to_string(),
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
@@ -1702,5 +1717,6 @@ mod tests {
         assert_eq!(parsed.scenery.mid, "forest_meadow");
         assert_eq!(parsed.scenery.near, "forest_meadow");
         assert_eq!(parsed.scenery.fg, "misty_swamp");
+        assert_eq!(parsed.music, "deep_caves");
     }
 }

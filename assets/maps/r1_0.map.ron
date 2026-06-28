@@ -16,6 +16,7 @@
         (tiles: [(14, 18), (15, 18), (16, 18)], path: [(30, 18)], mode: "pingpong", speed: 90, rest: 500),
     ],
     scenery: (far: "sandy_beach", mid: "sandy_beach", near: "sandy_beach", fg: "sandy_beach"),
+    music: "sandy_beach",
     bg: [0.32, 0.24, 0.16],
     tiles: [
         "#########..#############################",

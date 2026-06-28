@@ -172,29 +172,52 @@ pub fn write_save(save: &Save) {
     let _ = std::fs::write(slot_path(save.slot), save.to_ron());
 }
 
-/// Global settings, independent of any save slot (currently just the window mode).
-#[derive(Resource, Clone, Copy, Default)]
+/// Global settings, independent of any save slot (window mode + audio volumes).
+#[derive(Resource, Clone, Copy)]
 pub struct Settings {
     /// Borderless fullscreen when `true`, windowed when `false`.
     pub fullscreen: bool,
+    /// Sound-effects volume, 0.0..=1.0.
+    pub fx_volume: f32,
+    /// Music volume, 0.0..=1.0.
+    pub music_volume: f32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            fullscreen: false,
+            fx_volume: 0.8,
+            music_volume: 0.6,
+        }
+    }
 }
 
 const SETTINGS_PATH: &str = "saves/settings.ron";
 
 /// Load global settings from disk (defaults if missing or unparsable).
 pub fn read_settings() -> Settings {
+    let def = Settings::default();
     let Ok(text) = std::fs::read_to_string(SETTINGS_PATH) else {
-        return Settings::default();
+        return def;
     };
-    match ron::from_str(&text) {
-        Ok(v) => Settings {
-            fullscreen: v
-                .try_field("fullscreen")
-                .and_then(|x| x.as_i32().ok())
-                .unwrap_or(0)
-                != 0,
-        },
-        Err(_) => Settings::default(),
+    let Ok(v) = ron::from_str(&text) else {
+        return def;
+    };
+    let volume = |name: &str, fallback: f32| {
+        v.try_field(name)
+            .and_then(|x| x.as_f32().ok())
+            .unwrap_or(fallback)
+            .clamp(0.0, 1.0)
+    };
+    Settings {
+        fullscreen: v
+            .try_field("fullscreen")
+            .and_then(|x| x.as_i32().ok())
+            .unwrap_or(0)
+            != 0,
+        fx_volume: volume("fx_volume", def.fx_volume),
+        music_volume: volume("music_volume", def.music_volume),
     }
 }
 
@@ -203,7 +226,12 @@ pub fn write_settings(settings: &Settings) {
     let _ = std::fs::create_dir_all(SAVES_DIR);
     let _ = std::fs::write(
         SETTINGS_PATH,
-        format!("(fullscreen: {})\n", i32::from(settings.fullscreen)),
+        format!(
+            "(fullscreen: {}, fx_volume: {}, music_volume: {})\n",
+            i32::from(settings.fullscreen),
+            settings.fx_volume,
+            settings.music_volume,
+        ),
     );
 }
 

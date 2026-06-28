@@ -15,6 +15,7 @@
         (boss: 1, kind: 0, col: 28, row: 15),
     ],
     scenery: (far: "deep_caves", mid: "deep_caves", near: "deep_caves", fg: "deep_caves"),
+    music: "deep_caves",
     bg: [0.16, 0.32, 0.16],
     tiles: [
         "#########FF#############################",

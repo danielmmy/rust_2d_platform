@@ -12,6 +12,7 @@
     enemies: [
     ],
     scenery: (far: "volcanic_depths", mid: "volcanic_depths", near: "volcanic_depths", fg: "volcanic_depths"),
+    music: "volcanic_depths",
     bg: [0.16, 0.24, 0.32],
     tiles: [
         "#########..#############################",

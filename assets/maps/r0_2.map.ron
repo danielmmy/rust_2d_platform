@@ -12,6 +12,7 @@
     enemies: [
     ],
     scenery: (far: "snowy_mountains", mid: "snowy_mountains", near: "snowy_mountains", fg: "snowy_mountains"),
+    music: "snowy_mountains",
     bg: [0.16, 0.16, 0.32],
     tiles: [
         "########################################",

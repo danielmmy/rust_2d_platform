@@ -113,6 +113,7 @@ struct EditBuffer {
     movers: Vec<Mover>,       // moving platforms (authored with the `P` tool; preserved)
     scenery: Scenery,         // per-layer parallax scenery (V picks layer, C picks set)
     scenery_slot: usize,      // which scenery layer the `C` key cycles (0=far..3=fg)
+    music: String,            // background-music track name (N cycles it; "" = none)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -673,6 +674,17 @@ fn edit_tiles(
         buffer.status = scenery_status(&buffer.scenery, slot);
         changed = true;
     }
+    if keys.just_pressed(KeyCode::KeyN) {
+        // Cycle the room's music track: none -> each theme set -> none.
+        buffer.music = next_scenery(&buffer.music);
+        let shown = if buffer.music.is_empty() {
+            "none"
+        } else {
+            &buffer.music
+        };
+        buffer.status = format!("music: {shown}");
+        changed = true;
+    }
     if keys.just_pressed(KeyCode::KeyS) {
         buffer.status = save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
         changed = true;
@@ -947,7 +959,7 @@ fn draw_tiles(
             format!("brush: {}{}", BRUSHES[buffer.brush].1, stamp_note),
             "arrows move  |  space paint  |  X erase  |  tab brush  |  G stamp  |  P mover"
                 .to_string(),
-            "[ ] - =  resize  |  B colour  |  S save  |  M rooms  |  enter rename  |  esc exit"
+            "V/C scenery | N music | [ ] -= size | B colour | S save | enter name | M rooms | esc"
                 .to_string(),
         )
     };
@@ -1698,6 +1710,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         fog_respawn: false,
         movers: Vec::new(),
         scenery: Scenery::default(),
+        music: String::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -1738,8 +1751,9 @@ fn default_room(gx: i32, gy: i32, bg: [f32; 3]) -> MapData {
         far: set.clone(),
         mid: set.clone(),
         near: set.clone(),
-        fg: set,
+        fg: set.clone(),
     };
+    map.music = set; // each default room plays its theme's track
     map
 }
 
@@ -1796,6 +1810,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         fog_respawn: false,
         movers: Vec::new(),
         scenery: Scenery::default(),
+        music: String::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -1874,6 +1889,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         fog_respawn: map.fog_respawn,
         movers: map.movers.clone(),
         scenery: map.scenery.clone(),
+        music: map.music.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1911,6 +1927,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         fog_respawn: buffer.fog_respawn,   // preserved across edits (hand-authored)
         movers: buffer.movers.clone(),     // preserved across edits (hand-authored)
         scenery: buffer.scenery.clone(),
+        music: buffer.music.clone(),
         bg: buffer.bg,
         tiles: buffer
             .grid

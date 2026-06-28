@@ -16,6 +16,7 @@
         (tiles: [(22, 18), (23, 18), (24, 18)], path: [(22, 9), (30, 9), (30, 18)], mode: "loop", speed: 70, rest: 700),
     ],
     scenery: (far: "forest_meadow", mid: "forest_meadow", near: "forest_meadow", fg: "forest_meadow"),
+    music: "forest_meadow",
     bg: [0.32, 0.16, 0.16],
     tiles: [
         "#########..#############################",

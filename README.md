@@ -37,8 +37,9 @@ and **Load Game** open a **ten-slot** picker (each labelled with its `[Story]` o
   and your edits stay in that save only.
 
 **Options** (from the main menu or the pause menu) chooses the **window mode** —
-**Windowed** or **Fullscreen (borderless)** — applied instantly and remembered across
-launches (saved to `saves/settings.ron`).
+**Windowed** or **Fullscreen (borderless)** — and separate **FX** and **Music** volumes
+(confirm a volume row to cycle it 0→100%). Everything applies instantly and is remembered
+across launches (saved to `saves/settings.ron`).
 
 During play, **`Esc`** (or `Select`) brings up a **pause menu** (Continue /
 **Character** / **Edit Levels** / **Options** / **Main Menu** / Quit); **Character** opens a
@@ -179,14 +180,14 @@ The structure is plugin-per-concern:
 | [`ron`](src/ron.rs) | A tiny, self-contained RON reader for the map files. |
 | [`hazards`](src/hazards.rs) | Spikes + falling rocks → a `Hurt` on contact. |
 | [`health`](src/health.rs) | Health (sized by Vitality), i-frames, the colour-graded health-bar HUD, death → bloodstain + last bench. |
-| [`audio`](src/audio.rs) | Sound effects: embedded OGG clips played on a `PlaySfx` message (jump, slash, hurt, …). |
+| [`audio`](src/audio.rs) | Sound effects (`PlaySfx`) + per-room looping **music**; embedded OGG, with FX/Music volumes in Options. |
 | [`combat`](src/combat.rs) | Data-driven enemy kinds (stats/AI/animation), energy drops/pickup, bloodstain recovery, the 3-hit sword combo. |
 | [`stats`](src/stats.rs) | Character stats (Vitality/Strength/Poise), the upgrade shop, and the character screen. |
 | [`boss`](src/boss.rs) | The boss fight: fog-gate arena lock, attack patterns, projectiles, HUD, and the double-jump reward. |
 | [`save`](src/save.rs) | Ten-slot save system (mode + room + bench + progression), RON files under `saves/`. |
 | [`camera`](src/camera.rs) | Follow camera, bounded to the room; zooms in on small rooms. |
 | [`worldmap`](src/worldmap.rs) | Pause-screen world map (`M`): overview + per-room zoom. |
-| [`menu`](src/menu.rs) | Main menu (mode + slot picker) + pause menu (`Esc`) + Options (window mode); `MainMenu`/`Paused` states. |
+| [`menu`](src/menu.rs) | Main menu (mode + slot picker) + pause menu (`Esc`) + Options (window mode, FX/Music volume); `MainMenu`/`Paused` states. |
 | [`editor`](src/editor.rs) | Level builder (`F2` / pause **Edit Levels**, Builder saves): a tile view + a room-manager map. |
 
 The crate's **only dependency is `bevy`** — the maps are `.map.ron` files read by
@@ -325,8 +326,9 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | `X` | erase | `B` | recolour |
 | `Tab` | cycle brush | `V` / `C` | scenery: pick layer / set |
 | `G` | trace stamp shape | `S` | save |
-| `P` | mover (moving tile) / delete | `M` | room manager |
-| `Enter` | rename (type a name) | `Esc` | leave the builder |
+| `N` | room music (cycle track) | `M` | room manager |
+| `P` | mover (moving tile) / delete | `Esc` | leave the builder |
+| `Enter` | rename (type a name) | | |
 | `Space` (Portal/Door brush) | start a portal / door link | | |
 
 **Rooms** (`M`) — manage the world as a grid:
@@ -428,14 +430,26 @@ For a different grid, change the `*_COLS`/`*_ROWS` and `Clip` constants in
 
 ### Sound
 
-Sound effects live in `assets/sounds/*.ogg` and are **baked into the binary** too. They're
-synthesised (no recordings, no external assets) by [`tools/gen_sfx.py`](tools/gen_sfx.py) —
-plain Python plus `ffmpeg` to encode OGG; run `python3 tools/gen_sfx.py` to regenerate them
-after tweaking the recipes. Drop in your own `.ogg` over a placeholder to replace one. To add
-a new effect: add a recipe in the script, a [`Sfx`](src/audio.rs) variant + its file name,
-and fire `PlaySfx(Sfx::Yours)` from a gameplay system. Currently wired: footsteps, jump,
-double-jump, wall-jump, land, slash, the combo finisher, enemy/boss hit, taking damage, and
-energy pickup. Per-effect loudness is baked into the synthesis.
+[`audio`](src/audio.rs) handles both effects and music; all clips are **OGG baked into the
+binary** (Bevy plays OGG via its default `vorbis` feature). Two volumes — **FX** and
+**Music** — live in the **Options** menu (main menu or pause) and persist to
+`saves/settings.ron`.
+
+**Sound effects** live in `assets/sounds/*.ogg`, synthesised (no recordings) by
+[`tools/gen_sfx.py`](tools/gen_sfx.py) — plain Python plus `ffmpeg`; run
+`python3 tools/gen_sfx.py` to regenerate after tweaking the recipes. To add one: add a recipe,
+a [`Sfx`](src/audio.rs) variant + file name, and fire `PlaySfx(Sfx::Yours)` from a system.
+Wired: footsteps, jump, double-jump, wall-jump, land, slash, the combo finisher, enemy/boss
+hit, taking damage, and energy pickup.
+
+**Music** lives in `assets/music/<theme>.ogg` — one looping track per theme set, real
+**CC0 / public-domain** songs from [OpenGameArt](https://opengameart.org) (down-mixed to mono
+and length/quality-trimmed to stay small; see [`assets/music/CREDITS.md`](assets/music/CREDITS.md)).
+Each room names a track in its `music:` field (one of the 12 sets, or empty for silence); the
+shipped rooms default to their theme. The track follows the room and **loops**, only switching
+when you enter a room with a different track (so resting at a bench doesn't restart it). In the
+level builder, **`N`** cycles the current room's track. Replace a song by dropping your own
+`<theme>.ogg` in and rebuilding.
 
 ## Status
 
@@ -447,6 +461,13 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — Added **background music** ([`audio`](src/audio.rs)). 12 real **CC0 /
+  public-domain** tracks (one per theme set) from [OpenGameArt](https://opengameart.org),
+  down-mixed to mono and trimmed to stay small (each <1.4 MB), **baked into the binary**
+  (`assets/music/`, see [`CREDITS`](assets/music/CREDITS.md)). Each room names its track in a
+  new `music:` field (`MapData`); the loop **follows the room** and only switches on a real
+  change. The level builder's **`N`** key cycles a room's track, and **Options** now has
+  separate **FX** and **Music** volume controls (persisted to `saves/settings.ron`).
 - **2026-06-28** — Added **sound effects** ([`audio`](src/audio.rs)). Ten synthesised OGG
   clips — footsteps, jump / double-jump / wall-jump / land, slash + the combo finisher,
   enemy & boss hit, taking damage, and energy pickup — generated by

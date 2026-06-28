@@ -117,12 +117,29 @@ enum MenuAction {
     OpenOptions,
     /// Set the window mode (true = borderless fullscreen).
     SetFullscreen(bool),
+    /// Cycle the sound-effects volume up one step (wrapping).
+    StepFxVolume,
+    /// Cycle the music volume up one step (wrapping).
+    StepMusicVolume,
     /// Leave a paused game back to the title screen.
     MainMenu,
     Quit,
 }
 
-/// The settings rows, marking the active window mode.
+/// A 5-segment ASCII level bar + percent for a 0..1 volume.
+fn volume_bar(v: f32) -> String {
+    let filled = (v * 5.0).round() as usize;
+    let pct = (v * 100.0).round() as i32;
+    format!("[{}{}] {pct}%", "#".repeat(filled), "-".repeat(5 - filled))
+}
+
+/// The next volume level (steps of 20%, wrapping 100% -> 0%); confirm cycles a row.
+fn step_volume(v: f32) -> f32 {
+    let level = (v * 5.0).round() as i32;
+    ((level + 1).rem_euclid(6)) as f32 / 5.0
+}
+
+/// The settings rows: window mode plus FX / music volumes (confirm a volume to cycle it).
 fn options_items(settings: &Settings) -> Vec<(String, MenuAction)> {
     let mark = |on: bool| if on { "[x]" } else { "[ ]" };
     vec![
@@ -133,6 +150,14 @@ fn options_items(settings: &Settings) -> Vec<(String, MenuAction)> {
         (
             format!("{} Fullscreen (borderless)", mark(settings.fullscreen)),
             MenuAction::SetFullscreen(true),
+        ),
+        (
+            format!("FX volume     {}", volume_bar(settings.fx_volume)),
+            MenuAction::StepFxVolume,
+        ),
+        (
+            format!("Music volume  {}", volume_bar(settings.music_volume)),
+            MenuAction::StepMusicVolume,
         ),
         ("Back".to_string(), MenuAction::Back),
     ]
@@ -573,6 +598,15 @@ fn main_menu_update(
             save::write_settings(&settings);
             redraw_main(&mut commands, &menu, *screen, &settings, &camera);
         }
+        MenuAction::StepFxVolume | MenuAction::StepMusicVolume => {
+            if matches!(action, MenuAction::StepFxVolume) {
+                settings.fx_volume = step_volume(settings.fx_volume);
+            } else {
+                settings.music_volume = step_volume(settings.music_volume);
+            }
+            save::write_settings(&settings);
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
+        }
         MenuAction::Quit => {
             exit.write(AppExit::Success);
         }
@@ -661,6 +695,25 @@ fn pause_menu_update(
         }
         Some(MenuAction::SetFullscreen(fs)) => {
             settings.fullscreen = fs;
+            save::write_settings(&settings);
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                builder,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
+            );
+        }
+        Some(action @ (MenuAction::StepFxVolume | MenuAction::StepMusicVolume)) => {
+            if matches!(action, MenuAction::StepFxVolume) {
+                settings.fx_volume = step_volume(settings.fx_volume);
+            } else {
+                settings.music_volume = step_volume(settings.music_volume);
+            }
             save::write_settings(&settings);
             redraw_pause(
                 &mut commands,
