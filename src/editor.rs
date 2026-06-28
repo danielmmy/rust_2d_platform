@@ -4,7 +4,8 @@
 //! The builder has two views:
 //!
 //! - **Tiles** — paint the current room with the game's own sprites, resize it
-//!   freely, recolour it, pick a **parallax scenery set** (`V`), and save.
+//!   freely, recolour it, pick a **parallax scenery set** (`V`), trace a **multigrid
+//!   stamp** shape (`G`, then paint it with any brush), and save.
 //! - **Rooms** (`M`) — a map of every room where you select one to edit, **add**,
 //!   **delete**, **reorder** (grab + move), or **reset** to the default 12.
 //!
@@ -115,6 +116,13 @@ struct EditBuffer {
     cursor: (usize, usize), // (col, row)
     brush: usize,
     rename: Option<String>, // Some(text) while typing a new display name
+    /// The multigrid **stamp** shape: cell offsets relative to the cursor (empty = a single
+    /// cell, i.e. normal painting). Any brush paints the whole shape; traced with `G`.
+    stamp: Vec<(i32, i32)>,
+    /// While tracing a stamp shape: the anchor cell the offsets are measured from.
+    defining: Option<(usize, usize)>,
+    /// Cells visited while tracing the current shape (absolute), turned into `stamp` offsets.
+    define_cells: Vec<(usize, usize)>,
     status: String,
 }
 
@@ -270,7 +278,7 @@ fn edit_tiles(
 
     // Rename mode captures all keyboard input.
     if let Some(mut text) = buffer.rename.clone() {
-        match apply_typing(&mut text, &events) {
+        match apply_typing(&mut text, &events, 28) {
             Typing::Confirm => {
                 buffer.display = text.trim().to_string();
                 buffer.rename = None;
@@ -278,6 +286,59 @@ fn edit_tiles(
             }
             Typing::Cancel => buffer.rename = None,
             Typing::Continue => buffer.rename = Some(text),
+        }
+        redraw(&mut commands, &overlay);
+        draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
+        return;
+    }
+
+    // Tracing a stamp shape: arrows move the cursor and mark each cell visited; G/Enter
+    // finishes (the marked cells become the stamp shape), Esc cancels.
+    if let Some(anchor) = buffer.defining {
+        let cols = buffer.grid.first().map_or(0, Vec::len);
+        let rows = buffer.grid.len();
+        let mut moved = false;
+        if keys.just_pressed(KeyCode::ArrowLeft) && buffer.cursor.0 > 0 {
+            buffer.cursor.0 -= 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowRight) && buffer.cursor.0 + 1 < cols {
+            buffer.cursor.0 += 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowUp) && buffer.cursor.1 > 0 {
+            buffer.cursor.1 -= 1;
+            moved = true;
+        }
+        if keys.just_pressed(KeyCode::ArrowDown) && buffer.cursor.1 + 1 < rows {
+            buffer.cursor.1 += 1;
+            moved = true;
+        }
+        let cell = buffer.cursor;
+        if moved && !buffer.define_cells.contains(&cell) {
+            buffer.define_cells.push(cell);
+        }
+        if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::KeyG) {
+            let (ax, ay) = (anchor.0 as i32, anchor.1 as i32);
+            let shape: Vec<(i32, i32)> = buffer
+                .define_cells
+                .iter()
+                .map(|&(x, y)| (x as i32 - ax, y as i32 - ay))
+                .collect();
+            buffer.defining = None;
+            buffer.define_cells.clear();
+            // A single cell is just normal painting, so clear the shape rather than keep it.
+            if shape.len() <= 1 {
+                buffer.stamp.clear();
+                buffer.status = "stamp cleared — single-cell painting".to_string();
+            } else {
+                buffer.status = format!("stamp: {} cells — paint with any brush", shape.len());
+                buffer.stamp = shape;
+            }
+        } else if keys.just_pressed(KeyCode::Escape) {
+            buffer.defining = None;
+            buffer.define_cells.clear();
+            buffer.status = "stamp cancelled".to_string();
         }
         redraw(&mut commands, &overlay);
         draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
@@ -420,18 +481,22 @@ fn edit_tiles(
             draw_room_map(&mut commands, center, &game_assets, &map_assets, &room);
             return;
         }
-        buffer.grid[r][c] = brush;
-        clear_portal_origin(&mut buffer.teleports, c as i32, r as i32);
-        clear_door_origin(&mut buffer, c as i32, r as i32);
+        // Paint the brush over the stamp shape (a single cell when none is traced).
+        paint_shape(&mut buffer, c, r, brush);
+        changed = true;
+    }
+    if keys.just_pressed(KeyCode::KeyG) {
+        // Start tracing a stamp shape from the cursor (move to draw it, G/enter to finish).
+        buffer.defining = Some(buffer.cursor);
+        buffer.define_cells = vec![buffer.cursor];
+        buffer.status = "trace a stamp: move to draw, G/enter finish, esc cancel".to_string();
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyX) {
         let (c, r) = buffer.cursor;
-        buffer.grid[r][c] = '.';
-        // Pads and doors aren't grid glyphs, so erasing a cell also drops the pad /
-        // outgoing door whose origin sits there.
-        clear_portal_origin(&mut buffer.teleports, c as i32, r as i32);
-        clear_door_origin(&mut buffer, c as i32, r as i32);
+        // Erase the stamp shape (a single cell when none is traced). Pads and doors aren't
+        // grid glyphs, so erasing also drops any pad / outgoing door whose origin sits there.
+        paint_shape(&mut buffer, c, r, '.');
         changed = true;
     }
     if keys.just_pressed(KeyCode::Tab) {
@@ -610,6 +675,36 @@ fn draw_tiles(
         Color::srgba(1.0, 1.0, 1.0, 0.35),
     );
 
+    // Stamp overlay: while tracing, highlight the cells marked so far (amber); otherwise
+    // outline the shape's footprint at the cursor (cyan) so you see where a paint lands.
+    let (stamp_cells, stamp_color): (Vec<(i32, i32)>, Color) = if buffer.defining.is_some() {
+        let cells = buffer
+            .define_cells
+            .iter()
+            .map(|&(x, y)| (x as i32, y as i32))
+            .collect();
+        (cells, Color::srgba(1.0, 0.85, 0.3, 0.45))
+    } else if buffer.stamp.is_empty() {
+        (Vec::new(), Color::NONE)
+    } else {
+        let (cc, cr) = (buffer.cursor.0 as i32, buffer.cursor.1 as i32);
+        let cells = buffer
+            .stamp
+            .iter()
+            .map(|&(dx, dy)| (cc + dx, cr + dy))
+            .collect();
+        (cells, Color::srgba(0.4, 0.9, 1.0, 0.3))
+    };
+    for (tc, tr) in stamp_cells {
+        if tc >= 0 && tr >= 0 && (tr as usize) < rows && (tc as usize) < cols {
+            let pos = Vec2::new(
+                top_left.x + (tc as f32 + 0.5) * tile,
+                top_left.y - (tr as f32 + 0.5) * tile,
+            );
+            box_at(commands, pos, Vec2::splat(tile), 153.0, stamp_color);
+        }
+    }
+
     let bright = Color::srgb(0.92, 0.94, 0.98);
     let dim = Color::srgb(0.55, 0.58, 0.66);
     let named = if buffer.display.is_empty() {
@@ -631,19 +726,24 @@ fn draw_tiles(
         dim,
         &buffer.status,
     );
+    let stamp_note = if buffer.stamp.is_empty() {
+        String::new()
+    } else {
+        format!("   [stamp: {} cells]", buffer.stamp.len())
+    };
     text_at(
         commands,
         center + Vec2::new(0.0, -218.0),
         18.0,
         bright,
-        &format!("brush: {}", BRUSHES[buffer.brush].1),
+        &format!("brush: {}{}", BRUSHES[buffer.brush].1, stamp_note),
     );
     text_at(
         commands,
         center + Vec2::new(0.0, -241.0),
         13.0,
         dim,
-        "arrows move   |   space paint   |   X erase   |   tab brush   |   enter rename",
+        "arrows move  |  space paint  |  X erase  |  tab brush  |  G stamp  |  enter rename",
     );
     text_at(
         commands,
@@ -1642,8 +1742,8 @@ enum Typing {
     Cancel,
 }
 
-/// Apply typed keys to `text` (max ~28 chars), reporting confirm/cancel.
-fn apply_typing(text: &mut String, events: &[KeyboardInput]) -> Typing {
+/// Apply typed keys to `text` (capped at `max` chars), reporting confirm/cancel.
+fn apply_typing(text: &mut String, events: &[KeyboardInput], max: usize) -> Typing {
     for ev in events {
         if ev.state != ButtonState::Pressed {
             continue;
@@ -1654,10 +1754,10 @@ fn apply_typing(text: &mut String, events: &[KeyboardInput]) -> Typing {
             Key::Backspace => {
                 text.pop();
             }
-            Key::Space if text.len() < 28 => text.push(' '),
+            Key::Space if text.len() < max => text.push(' '),
             Key::Character(s) => {
                 for c in s.chars() {
-                    if !c.is_control() && text.len() < 28 {
+                    if !c.is_control() && text.len() < max {
                         text.push(c);
                     }
                 }
@@ -1666,6 +1766,33 @@ fn apply_typing(text: &mut String, events: &[KeyboardInput]) -> Typing {
         }
     }
     Typing::Continue
+}
+
+/// The stamp shape's cell offsets, defaulting to a single cell when no shape is traced.
+fn stamp_offsets(buffer: &EditBuffer) -> Vec<(i32, i32)> {
+    if buffer.stamp.is_empty() {
+        vec![(0, 0)]
+    } else {
+        buffer.stamp.clone()
+    }
+}
+
+/// Paint `glyph` over the stamp shape, anchored at `(col, row)` (a single cell when no shape
+/// is traced). Out-of-bounds offsets are skipped; painted cells clear any pad/door there.
+fn paint_shape(buffer: &mut EditBuffer, col: usize, row: usize, glyph: char) {
+    let rows = buffer.grid.len();
+    for (dx, dy) in stamp_offsets(buffer) {
+        let (tc, tr) = (col as i32 + dx, row as i32 + dy);
+        if tc < 0 || tr < 0 {
+            continue;
+        }
+        let (tc, tr) = (tc as usize, tr as usize);
+        if tr < rows && tc < buffer.grid[tr].len() {
+            buffer.grid[tr][tc] = glyph;
+            clear_portal_origin(&mut buffer.teleports, tc as i32, tr as i32);
+            clear_door_origin(buffer, tc as i32, tr as i32);
+        }
+    }
 }
 
 /// Top-left grid cell of the scrolling window, keeping the cursor centred.

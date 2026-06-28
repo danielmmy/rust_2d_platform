@@ -323,8 +323,9 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | `Space` | paint brush | `-` / `=` | height − / + |
 | `X` | erase | `B` | recolour |
 | `Tab` | cycle brush | `V` / `C` | scenery: pick layer / set |
-| `S` | save | `Enter` | rename (type a name) |
-| `M` | room manager | `Esc` | leave the builder |
+| `G` | trace stamp shape | `S` | save |
+| `M` | room manager | `Enter` | rename (type a name) |
+| `Esc` | leave the builder | | |
 | `Space` (Portal/Door brush) | start a portal / door link | | |
 
 **Rooms** (`M`) — manage the world as a grid:
@@ -365,6 +366,14 @@ such a move.)
 grid glyph `B`). In play, stand on it and press `E` to rest — saving the game,
 refilling hearts, and resetting enemies; it's also where the player respawns after
 losing all hearts.
+
+**Stamp** (multigrid brush) — **trace a shape, then paint it with any brush.** Press
+**`G`** to start at the cursor, **move** the cursor to draw the shape you want (each cell
+you pass over is marked, shown in amber), and press **`G`** / `enter` to finish (`esc`
+cancels). Now `space` paints **the whole shape** with the current brush — and `X` erases
+it — anchored at the cursor, so you stamp it wherever you like. The footprint previews in
+cyan as you move; `Tab` picks the fill item (or Erase) as usual. Trace a single cell again
+to go back to normal one-cell painting. The shape lives in the editor only (not saved).
 
 ### Replace the art
 
@@ -414,6 +423,12 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — Added a **multigrid stamp brush** to the level builder
+  ([`editor`](src/editor.rs)). Press **`G`** to **trace a shape** by moving the cursor (each
+  cell visited is marked, in amber), `G`/`enter` to finish; then `space` paints **the whole
+  shape** with the current brush (and `X` erases it), anchored at the cursor, with a live
+  cyan footprint preview. The fill item is just the normal brush selection (`Tab`), so the
+  same shape stamps walls, spikes, enemies, … The shape is editor-only (not saved).
 - **2026-06-28** — Added an **Options** menu (main menu + pause) to choose the **window
   mode** — windowed or **borderless fullscreen** — applied live and persisted to
   `saves/settings.ron` (new [`Settings`](src/save.rs), loaded at startup and pushed to the
