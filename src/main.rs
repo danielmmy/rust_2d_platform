@@ -20,6 +20,7 @@ mod physics;
 mod player;
 mod ron;
 mod save;
+mod scenery;
 mod state;
 mod stats;
 mod world;
@@ -92,6 +93,7 @@ fn main() {
         boss::BossPlugin,
         anim::AnimationPlugin,
         camera::CameraPlugin,
+        scenery::SceneryPlugin,
         worldmap::WorldMapPlugin,
         menu::MenuPlugin,
         // The level builder is reachable from Builder saves (any build).

@@ -29,6 +29,14 @@ fn main() {
         "assets/sprites",
         ".png",
     );
+    emit(
+        &mut code,
+        "EMBEDDED_SCENERY",
+        "&[u8]",
+        "include_bytes!",
+        "assets/scenery",
+        ".png",
+    );
     let out = Path::new(&env::var("OUT_DIR").unwrap()).join("embedded_assets.rs");
     fs::write(out, code).expect("write embedded_assets.rs");
 }

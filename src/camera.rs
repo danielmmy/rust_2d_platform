@@ -25,7 +25,7 @@ use crate::worldmap::MapView;
 const VIEW_HALF: Vec2 = Vec2::new(480.0, 270.0);
 
 #[derive(Component)]
-struct GameCamera;
+pub(crate) struct GameCamera;
 
 pub struct CameraPlugin;
 
@@ -89,7 +89,7 @@ fn clamp_to_room(target: Vec2, room: Vec2, half: Vec2) -> Vec2 {
     )
 }
 
-fn follow(
+pub(crate) fn follow(
     time: Res<Time>,
     mut room_view: ResMut<RoomView>,
     player: Query<&Transform, (With<Player>, Without<GameCamera>)>,

@@ -4,7 +4,7 @@
 //! The builder has two views:
 //!
 //! - **Tiles** — paint the current room with the game's own sprites, resize it
-//!   freely, recolour it, and save.
+//!   freely, recolour it, pick a **parallax scenery set** (`V`), and save.
 //! - **Rooms** (`M`) — a map of every room where you select one to edit, **add**,
 //!   **delete**, **reorder** (grab + move), or **reset** to the default 12.
 //!
@@ -25,6 +25,7 @@ use bevy::prelude::*;
 use crate::hazards::RockSprite;
 use crate::menu::Paused;
 use crate::save::{GameMode, Save};
+use crate::scenery;
 use crate::state::GameState;
 use crate::world::{
     ArenaSpawn, BENCH_GLYPH, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
@@ -107,6 +108,7 @@ struct EditBuffer {
     fog_wall: Vec<ArenaSpawn>, // arena combatants (hand-authored; preserved across edits)
     fog_respawn: bool,        // arena re-arms on bench rest (preserved across edits)
     movers: Vec<Mover>,       // moving platforms (hand-authored; preserved across edits)
+    scenery: String,          // parallax scenery set (cycled with `V`)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -464,6 +466,18 @@ fn edit_tiles(
         buffer.bg = PALETTE[buffer.bg_index];
         changed = true;
     }
+    if keys.just_pressed(KeyCode::KeyV) {
+        buffer.scenery = next_scenery(&buffer.scenery);
+        buffer.status = format!(
+            "scenery: {}",
+            if buffer.scenery.is_empty() {
+                "none"
+            } else {
+                &buffer.scenery
+            }
+        );
+        changed = true;
+    }
     if keys.just_pressed(KeyCode::KeyS) {
         buffer.status = save_tiles(&root, &buffer, &mut game_assets, &mut map_assets);
         changed = true;
@@ -473,6 +487,13 @@ fn edit_tiles(
         redraw(&mut commands, &overlay);
         draw_tiles(&mut commands, &buffer, &game_assets, &rock, center);
     }
+}
+
+/// Cycle a room's scenery set: none → each [`scenery::SETS`] entry → none.
+fn next_scenery(current: &str) -> String {
+    let order: Vec<&str> = std::iter::once("").chain(scenery::SETS).collect();
+    let i = order.iter().position(|s| *s == current).unwrap_or(0);
+    order[(i + 1) % order.len()].to_string()
 }
 
 fn draw_tiles(
@@ -1340,6 +1361,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         fog_wall: Vec::new(),
         fog_respawn: false,
         movers: Vec::new(),
+        scenery: String::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -1374,7 +1396,38 @@ fn default_room(gx: i32, gy: i32, bg: [f32; 3]) -> MapData {
             g[1][20] = 'R';
         }
     }
-    standard_map(bg, g)
+    let mut map = standard_map(bg, g);
+    map.scenery = scenery_for(gx, gy).to_string();
+    map
+}
+
+/// A default scenery set for a grid cell — grouped by row so the bottom feels grounded,
+/// the middle underground, and the top skyward. Mixable per-room in the builder.
+fn scenery_for(gx: i32, gy: i32) -> &'static str {
+    const GROUND: [&str; 4] = [
+        "forest_meadow",
+        "sandy_beach",
+        "autumn_woods",
+        "desolate_desert",
+    ];
+    const UNDER: [&str; 4] = [
+        "deep_caves",
+        "mushroom_hollow",
+        "misty_swamp",
+        "volcanic_depths",
+    ];
+    const SKY: [&str; 4] = [
+        "snowy_mountains",
+        "crystal_grotto",
+        "sunset_cliffs",
+        "starry_void",
+    ];
+    let col = gx.rem_euclid(4) as usize;
+    match gy.rem_euclid(3) {
+        0 => GROUND[col],
+        1 => UNDER[col],
+        _ => SKY[col],
+    }
 }
 
 fn blank_map(bg: [f32; 3]) -> MapData {
@@ -1400,6 +1453,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         fog_wall: Vec::new(),
         fog_respawn: false,
         movers: Vec::new(),
+        scenery: String::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -1477,6 +1531,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         fog_wall: map.fog_wall.clone(),
         fog_respawn: map.fog_respawn,
         movers: map.movers.clone(),
+        scenery: map.scenery.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -1513,6 +1568,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         fog_wall: buffer.fog_wall.clone(), // preserved across edits (hand-authored)
         fog_respawn: buffer.fog_respawn,   // preserved across edits (hand-authored)
         movers: buffer.movers.clone(),     // preserved across edits (hand-authored)
+        scenery: buffer.scenery.clone(),
         bg: buffer.bg,
         tiles: buffer
             .grid

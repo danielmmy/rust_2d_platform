@@ -193,6 +193,9 @@ pub struct MapData {
     pub fog_respawn: bool,
     /// Moving platforms (empty = none). See [`Mover`].
     pub movers: Vec<Mover>,
+    /// Parallax scenery set for this room (e.g. `"forest_meadow"`; empty = none).
+    /// See [`crate::scenery`].
+    pub scenery: String,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -317,6 +320,7 @@ impl MapData {
             fog_wall,
             fog_respawn,
             movers,
+            scenery: optional_str("scenery")?,
             bg,
             tiles,
         })
@@ -421,13 +425,14 @@ impl MapData {
              east: [\n{east}    ],\n    west: [\n{west}    ],\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
              fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
-             movers: [\n{movers}    ],\n    \
+             movers: [\n{movers}    ],\n    scenery: \"{}\",\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
             self.spikes,
             self.rocks,
             i32::from(self.fog_respawn),
+            self.scenery,
             self.bg[0],
             self.bg[1],
             self.bg[2],
@@ -571,6 +576,8 @@ pub(crate) struct GameAssets {
     pub(crate) orb: Handle<Image>,
     pub(crate) slash: Handle<Image>,
     pub(crate) boss: Handle<Image>,
+    /// Parallax scenery layers by file name (e.g. `"forest_meadow_far.png"`).
+    pub(crate) scenery: HashMap<String, Handle<Image>>,
 }
 
 /// The room the player is currently in: its name, neighbours and pixel size.
@@ -709,14 +716,9 @@ impl Plugin for WorldPlugin {
     }
 }
 
-/// Decode an embedded PNG (by file name) into a live `Image` asset, keeping the
-/// game's crisp nearest-neighbour sampling.
-fn embedded_sprite(images: &mut Assets<Image>, file: &str) -> Handle<Image> {
-    let bytes = EMBEDDED_SPRITES
-        .iter()
-        .find(|(name, _)| *name == file)
-        .map(|(_, bytes)| *bytes)
-        .unwrap_or_else(|| panic!("embedded sprite '{file}' not found"));
+/// Decode PNG bytes into a live `Image` asset, keeping the game's crisp
+/// nearest-neighbour sampling.
+fn decode_png(images: &mut Assets<Image>, file: &str, bytes: &[u8]) -> Handle<Image> {
     let image = Image::from_buffer(
         bytes,
         ImageType::Extension("png"),
@@ -725,8 +727,18 @@ fn embedded_sprite(images: &mut Assets<Image>, file: &str) -> Handle<Image> {
         ImageSampler::nearest(),
         RenderAssetUsages::RENDER_WORLD,
     )
-    .unwrap_or_else(|e| panic!("decoding embedded sprite '{file}': {e:?}"));
+    .unwrap_or_else(|e| panic!("decoding embedded PNG '{file}': {e:?}"));
     images.add(image)
+}
+
+/// Decode an embedded sprite by file name.
+fn embedded_sprite(images: &mut Assets<Image>, file: &str) -> Handle<Image> {
+    let bytes = EMBEDDED_SPRITES
+        .iter()
+        .find(|(name, _)| *name == file)
+        .map(|(_, bytes)| *bytes)
+        .unwrap_or_else(|| panic!("embedded sprite '{file}' not found"));
+    decode_png(images, file, bytes)
 }
 
 fn load_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
@@ -747,6 +759,10 @@ fn load_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         orb: embedded_sprite(&mut images, "orb.png"),
         slash: embedded_sprite(&mut images, "slash.png"),
         boss: embedded_sprite(&mut images, "boss.png"),
+        scenery: EMBEDDED_SCENERY
+            .iter()
+            .map(|(name, bytes)| (name.to_string(), decode_png(&mut images, name, bytes)))
+            .collect(),
     });
     commands.insert_resource(RockSprite(embedded_sprite(&mut images, "rock.png")));
 }
@@ -1094,6 +1110,9 @@ fn handle_load_map(
             std::mem::take(&mut mover_parts[mi]),
         );
     }
+
+    // Parallax scenery layers for this room (despawned with the room as MapEntity).
+    crate::scenery::spawn_scenery(&mut commands, &assets, &map.scenery);
 
     // Teleporter pads are pure data (no grid glyph) — spawn one per portal at its
     // origin cell, flipping the row so y points up.
@@ -1583,6 +1602,7 @@ mod tests {
                 speed: 60.0,
                 rest: 1000.0,
             }],
+            scenery: "forest_meadow".to_string(),
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
@@ -1628,5 +1648,6 @@ mod tests {
         assert!(parsed.movers[0].mode == MoveMode::PingPong);
         assert_eq!(parsed.movers[0].speed, 60.0);
         assert_eq!(parsed.movers[0].rest, 1000.0);
+        assert_eq!(parsed.scenery, "forest_meadow");
     }
 }

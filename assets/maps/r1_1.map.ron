@@ -17,6 +17,7 @@
         (boss: 0, kind: 0, col: 30, row: 11),
     ],
     fog_respawn: 1,
+    scenery: "mushroom_hollow",
     bg: [0.16, 0.32, 0.24],
     tiles: [
         "#########FF#############################",
