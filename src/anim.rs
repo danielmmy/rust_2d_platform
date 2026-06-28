@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use crate::boss::{Boss, BossPose};
 use crate::combat::{ENEMY_KINDS, Enemy};
 use crate::health::Invuln;
+use crate::input::PlayerIntent;
 use crate::player::{JumpState, MovementConfig, Player, Velocity};
 use crate::state::GameState;
 use crate::world::{Bench, GameAssets, Teleporter};
@@ -146,13 +147,13 @@ impl Plugin for AnimationPlugin {
 // --- player --------------------------------------------------------------
 
 const PLAYER_COLS: u32 = 6;
-const PLAYER_ROWS: u32 = 4;
+const PLAYER_ROWS: u32 = 6;
 /// Minimum horizontal speed (px/s) before the walk cycle plays.
 const WALK_SPEED_MIN: f32 = 12.0;
 
-// Frame rows in the 6×4 sheet: 0 = idle/blink, 1 = walk, 2 = jump, 3 = damage.
-// The sprite faces right; `player` movement flips it to face left, Hollow-Knight
-// style, so facing follows the walk direction.
+// Frame rows in the 6×6 sheet: 0 = idle/blink, 1 = walk, 2 = jump, 3 = damage,
+// 4 = crouch (hold Down), 5 = look-up (hold Up). The sprite faces right; `player`
+// movement flips it to face left, Hollow-Knight style, so facing follows the walk.
 const PLAYER_IDLE: Clip = Clip {
     first: 0,
     count: 4,
@@ -176,6 +177,20 @@ const PLAYER_DAMAGE: Clip = Clip {
     first: 18,
     count: 4,
     fps: 14.0,
+    playback: Playback::Loop,
+};
+/// Static crouch pose (hold Down, grounded and still).
+const PLAYER_CROUCH: Clip = Clip {
+    first: 24,
+    count: 1,
+    fps: 1.0,
+    playback: Playback::Loop,
+};
+/// Static look-up pose (hold Up, grounded and still).
+const PLAYER_LOOKUP: Clip = Clip {
+    first: 30,
+    count: 1,
+    fps: 1.0,
     playback: Playback::Loop,
 };
 
@@ -208,10 +223,12 @@ fn attach_player(
         .insert(SpriteAnimation::new(PLAYER_IDLE));
 }
 
-/// Pick the player's clip from state: damage > jump (airborne) > walk > idle.
+/// Pick the player's clip from state: damage > jump (airborne) > walk > crouch / look-up
+/// (grounded, still, holding Down / Up) > idle.
 fn control_player(
     invuln: Res<Invuln>,
     cfg: Res<MovementConfig>,
+    intent: Res<PlayerIntent>,
     mut player: Query<(&JumpState, &Velocity, &mut SpriteAnimation), With<Player>>,
 ) {
     let Ok((jump, velocity, mut anim)) = player.single_mut() else {
@@ -234,6 +251,10 @@ fn control_player(
         anim.frame = ((progress * anim.clip.count as f32) as usize).min(last);
     } else if velocity.0.x.abs() > WALK_SPEED_MIN {
         anim.play(PLAYER_WALK);
+    } else if intent.down {
+        anim.play(PLAYER_CROUCH);
+    } else if intent.up {
+        anim.play(PLAYER_LOOKUP);
     } else {
         anim.play(PLAYER_IDLE);
     }

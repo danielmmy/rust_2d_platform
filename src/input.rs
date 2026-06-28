@@ -10,6 +10,10 @@ use crate::GameSet;
 pub struct PlayerIntent {
     /// Horizontal axis in `[-1, 1]`.
     pub move_x: f32,
+    /// Up is held — looks up when grounded.
+    pub up: bool,
+    /// Down is held — crouches when grounded; aims a **pogo** down-slash when airborne.
+    pub down: bool,
     /// Jump was pressed this frame (edge) — feeds the jump buffer.
     pub jump_pressed: bool,
     /// Jump is currently held — feeds variable jump height.
@@ -29,12 +33,9 @@ impl Plugin for InputPlugin {
     }
 }
 
-const JUMP_KEYS: [KeyCode; 4] = [
-    KeyCode::Space,
-    KeyCode::KeyW,
-    KeyCode::ArrowUp,
-    KeyCode::KeyZ,
-];
+/// Jump is its **own dedicated button** (no longer shared with Up): keyboard `Space`,
+/// gamepad `South`. Up/Down are free for look-up / crouch (and the pogo down-slash).
+const JUMP_KEYS: [KeyCode; 1] = [KeyCode::Space];
 
 fn gather(
     keys: Res<ButtonInput<KeyCode>>,
@@ -48,6 +49,8 @@ fn gather(
     if keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD) {
         move_x += 1.0;
     }
+    let mut up = keys.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW]);
+    let mut down = keys.any_pressed([KeyCode::ArrowDown, KeyCode::KeyS]);
     let mut jump_pressed = keys.any_just_pressed(JUMP_KEYS);
     let mut jump_held = keys.any_pressed(JUMP_KEYS);
     let mut interact = keys.just_pressed(KeyCode::KeyE);
@@ -58,11 +61,18 @@ fn gather(
         if stick.abs() > 0.3 {
             move_x += stick;
         }
+        let stick_y = gamepad.get(GamepadAxis::LeftStickY).unwrap_or(0.0);
         if gamepad.pressed(GamepadButton::DPadLeft) {
             move_x -= 1.0;
         }
         if gamepad.pressed(GamepadButton::DPadRight) {
             move_x += 1.0;
+        }
+        if gamepad.pressed(GamepadButton::DPadUp) || stick_y > 0.5 {
+            up = true;
+        }
+        if gamepad.pressed(GamepadButton::DPadDown) || stick_y < -0.5 {
+            down = true;
         }
         if gamepad.just_pressed(GamepadButton::South) {
             jump_pressed = true;
@@ -79,6 +89,8 @@ fn gather(
     }
 
     intent.move_x = move_x.clamp(-1.0, 1.0);
+    intent.up = up;
+    intent.down = down;
     intent.jump_pressed = jump_pressed;
     intent.jump_held = jump_held;
     intent.interact = interact;

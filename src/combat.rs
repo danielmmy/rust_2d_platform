@@ -18,9 +18,10 @@ use crate::GameSet;
 use crate::anim::{Clip, Playback};
 use crate::audio::{PlaySfx, Sfx};
 use crate::boss::{BOSS_HALF, Boss, BossFight};
+use crate::hazards::Hazard;
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
-use crate::player::{PLAYER_HALF, Player};
+use crate::player::{JumpState, PLAYER_HALF, Player, Velocity};
 use crate::save::Save;
 use crate::state::GameState;
 use crate::stats::{self, Stats};
@@ -472,11 +473,16 @@ const SWING_ACTIVE: f32 = 0.12;
 /// Deliberately generous (a wide arc, à la Silksong's nail) so swings feel forgiving.
 const HIT_REACH: f32 = 24.0;
 const HIT_HALF: Vec2 = Vec2::new(28.0, 26.0);
+/// How far **below** the player a down-slash hitbox sits (the pogo strike).
+const HIT_DOWN_REACH: f32 = 26.0;
+/// Upward bounce speed when a down-slash connects (Hollow-Knight pogo).
+const POGO_SPEED: f32 = 360.0;
 /// How long a slash sprite lingers.
 const SLASH_TIME: f32 = 0.12;
 
 /// The player's sword state: combo step (0 = idle, 1..=3), its timers, and — while a
-/// swing is live — its direction and which enemies it has already hit.
+/// swing is live — its direction, whether it's a downward (pogo) strike, whether that
+/// strike has already bounced, and which enemies it has already hit.
 #[derive(Resource, Default)]
 struct Sword {
     step: u8,
@@ -484,6 +490,10 @@ struct Sword {
     combo_window: f32,
     active: f32,
     dir: f32,
+    /// This swing points straight down (a mid-air pogo strike).
+    down: bool,
+    /// A down-swing has already bounced the player (so it pogos once per swing).
+    pogoed: bool,
     hit: HashSet<Entity>,
 }
 
@@ -491,7 +501,7 @@ struct Sword {
 #[derive(Component)]
 struct Slash(f32);
 
-#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // a Bevy system; distinct params
 fn player_attack(
     time: Res<Time>,
     intent: Res<PlayerIntent>,
@@ -501,9 +511,10 @@ fn player_attack(
     mut sword: ResMut<Sword>,
     mut commands: Commands,
     mut sfx: MessageWriter<PlaySfx>,
-    player: Query<(&Transform, &Sprite), With<Player>>,
+    mut player: Query<(&Transform, &Sprite, &mut Velocity, &mut JumpState), With<Player>>,
     mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Player>>,
     mut bosses: Query<(Entity, &Transform, &mut Boss), Without<Player>>,
+    hazards: Query<(&Transform, &Hazard), (Without<Player>, Without<Enemy>, Without<Boss>)>,
 ) {
     let dt = time.delta_secs();
     sword.cooldown = (sword.cooldown - dt).max(0.0);
@@ -513,13 +524,14 @@ fn player_attack(
         sword.step = 0; // window lapsed → combo resets
     }
 
-    let Ok((player_tf, sprite)) = player.single() else {
+    let Ok((player_tf, sprite, mut velocity, mut jump)) = player.single_mut() else {
         return;
     };
     let player_pos = player_tf.translation.truncate();
 
     // Start a swing on press (when off cooldown): advance the combo, re-arm timers,
-    // open the hitbox window, lock its direction, and flash a slash.
+    // open the hitbox window, lock its direction, and flash a slash. Holding Down while
+    // airborne aims the swing **straight down** — a pogo strike.
     if intent.attack_pressed && sword.cooldown <= 0.0 {
         sword.step = if sword.combo_window > 0.0 && sword.step < 3 {
             sword.step + 1
@@ -530,6 +542,8 @@ fn player_attack(
         sword.combo_window = SWING_COOLDOWN + COMBO_GRACE;
         sword.active = SWING_ACTIVE;
         sword.dir = if sprite.flip_x { -1.0 } else { 1.0 };
+        sword.down = intent.down && !jump.grounded();
+        sword.pogoed = false;
         sword.hit.clear();
         // A heftier sound on the third hit (the combo finisher).
         sfx.write(PlaySfx(if sword.step >= 3 {
@@ -544,6 +558,20 @@ fn player_attack(
             2 => (Vec2::new(52.0, 52.0), Color::srgb(0.85, 0.95, 1.0)),
             _ => (Vec2::new(46.0, 48.0), Color::srgb(0.6, 0.9, 1.0)),
         };
+        let (offset, rotation, flip) = if sword.down {
+            // Point the slash downward, under the player's feet.
+            (
+                Vec2::new(0.0, -HIT_DOWN_REACH),
+                Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                false,
+            )
+        } else {
+            (
+                Vec2::new(sword.dir * HIT_REACH, 0.0),
+                Quat::IDENTITY,
+                sword.dir < 0.0,
+            )
+        };
         commands.spawn((
             MapEntity,
             Slash(SLASH_TIME),
@@ -551,10 +579,14 @@ fn player_attack(
                 image: assets.slash.clone(),
                 custom_size: Some(size),
                 color,
-                flip_x: sword.dir < 0.0,
+                flip_x: flip,
                 ..default()
             },
-            Transform::from_xyz(player_pos.x + sword.dir * HIT_REACH, player_pos.y, 11.0),
+            Transform {
+                translation: (player_pos + offset).extend(11.0),
+                rotation,
+                ..default()
+            },
         ));
     }
 
@@ -562,7 +594,12 @@ fn player_attack(
     // Damage scales with the player's Strength stat.
     if sword.active > 0.0 {
         let damage = stats.sword_damage();
-        let hit_center = player_pos + Vec2::new(sword.dir * HIT_REACH, 0.0);
+        let hit_center = if sword.down {
+            player_pos + Vec2::new(0.0, -HIT_DOWN_REACH)
+        } else {
+            player_pos + Vec2::new(sword.dir * HIT_REACH, 0.0)
+        };
+        let mut connected = false; // anything struck this frame (for the pogo bounce)
         for (entity, enemy_tf, mut enemy) in &mut enemies {
             if sword.hit.contains(&entity) {
                 continue;
@@ -571,6 +608,7 @@ fn player_attack(
             if delta.x < HIT_HALF.x + ENEMY_HALF.x && delta.y < HIT_HALF.y + ENEMY_HALF.y {
                 enemy.health -= damage;
                 sword.hit.insert(entity);
+                connected = true;
                 sfx.write(PlaySfx(Sfx::EnemyHit));
                 info!(
                     "hit enemy kind {} for {} ({} hp left)",
@@ -590,8 +628,24 @@ fn player_attack(
                     boss.health -= damage;
                     boss.flash = 0.12;
                     sword.hit.insert(entity);
+                    connected = true;
                     sfx.write(PlaySfx(Sfx::EnemyHit));
                 }
+            }
+        }
+
+        // Pogo: a downward strike that lands on *anything* (enemy, boss, or a hazard such
+        // as a spike/rock) bounces the player up — once per swing — even while invulnerable.
+        if sword.down && !sword.pogoed && !jump.grounded() {
+            let on_hazard = hazards.iter().any(|(t, h)| {
+                let delta = (t.translation.truncate() - hit_center).abs();
+                delta.x < HIT_HALF.x + h.half.x && delta.y < HIT_HALF.y + h.half.y
+            });
+            if connected || on_hazard {
+                velocity.0.y = POGO_SPEED;
+                jump.start_pogo();
+                sword.pogoed = true;
+                sfx.write(PlaySfx(Sfx::Jump));
             }
         }
     }

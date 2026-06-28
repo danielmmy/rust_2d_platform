@@ -59,6 +59,14 @@ impl JumpState {
     pub fn grounded(&self) -> bool {
         self.grounded
     }
+
+    /// Begin a **pogo** bounce (a down-slash connected): behave like a fresh jump — so
+    /// variable height and the jump arc apply — and refresh the mid-air jump, so pogos can
+    /// be chained and you can still double-jump out of one. Called from [`crate::combat`].
+    pub fn start_pogo(&mut self) {
+        self.jumping = true;
+        self.air_jump = true;
+    }
 }
 
 /// Unlockable player abilities (persisted in the [`Save`]).
