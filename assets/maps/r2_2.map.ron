@@ -11,7 +11,7 @@
     ],
     enemies: [
     ],
-    scenery: "sunset_cliffs",
+    scenery: (far: "sunset_cliffs", mid: "sunset_cliffs", near: "sunset_cliffs", fg: "sunset_cliffs"),
     bg: [0.32, 0.16, 0.32],
     tiles: [
         "########################################",

@@ -1,37 +1,75 @@
-//! Parallax scenery — layered, looping backgrounds that make rooms feel alive.
+//! Parallax scenery — layered, looping backdrops that make rooms feel alive.
 //!
-//! A room names a **scenery set** (e.g. `"forest_meadow"`); [`spawn_scenery`] lays out
-//! its layers as a small pool of tile sprites, and [`parallax`] repositions them against
-//! the camera each frame: far layers drift slowly, nearer ones more, in both axes. Layers
-//! **wrap horizontally** (any room width loops) and use **vertical parallax** so the
-//! backdrop scrolls down as you climb rather than riding up with the camera. All layers
-//! sit **behind** gameplay so nothing covers the player. Each set ships four tileable
-//! layers (`far`/`mid`/`near`/`fg`) in `assets/scenery/` (see `tools/gen_scenery.py`).
+//! A room picks a **set per layer** ([`Scenery`]), so backdrops mix-and-match (a desert
+//! sky over forest hills, …). [`spawn_scenery`] lays each layer out as a small pool of
+//! tile sprites and [`parallax`] repositions them against the camera every frame:
+//!
+//! - **far / mid / near** are *background* (behind everything): they wrap horizontally and
+//!   use **vertical parallax** so the backdrop scrolls down as you climb instead of riding
+//!   up with the camera. The far sky stays camera-locked so it always fills behind.
+//! - **fg** is a real *foreground* drawn **in front** of the player but **anchored to the
+//!   ground**, so its sparse tufts sit at your feet and scroll off as you rise — never
+//!   covering the player.
+//!
+//! Each set ships four tileable layers in `assets/scenery/<set>/` (`tools/gen_scenery.py`).
 
 use bevy::prelude::*;
 
 use crate::GameSet;
 use crate::camera::{GameCamera, follow};
-use crate::world::{GameAssets, MapEntity};
+use crate::world::{GameAssets, MapEntity, Scenery};
 
-/// Tileable layer size (must match `tools/gen_scenery.py`).
-const SCENERY_W: f32 = 480.0;
+const FAR_W: f32 = 1440.0; // wide sky → never visibly repeats across a room
+const NEAR_W: f32 = 960.0; // mid / near / fg width (>= the viewport)
 const SCENERY_H: f32 = 560.0;
-/// Half the logical viewport width (matches the camera's fixed projection).
 const VIEW_HALF_W: f32 = 480.0;
-/// Tiles per layer — enough to cover the view plus a wrap buffer.
-const POOL: i32 = 5;
+/// World Y the foreground centres on, so its image bottom sits at the room floor (y≈0).
+const GROUND_ANCHOR: f32 = SCENERY_H * 0.5;
 
-/// The layers every set provides: `(file suffix, horizontal parallax, vertical parallax,
-/// z depth)`. Higher factor = moves more with the camera (closer). All sit **behind**
-/// gameplay (negative z) so nothing ever covers the player. The far sky has no vertical
-/// parallax, so it always fills the view; the nearer layers scroll vertically and may
-/// leave the top open — that just reveals the sky behind them, Silksong-style.
-const LAYERS: [(&str, f32, f32, f32); 4] = [
-    ("far", 0.10, 0.0, -40.0),
-    ("mid", 0.30, 0.12, -30.0),
-    ("near", 0.55, 0.25, -20.0),
-    ("fg", 0.78, 0.38, -10.0),
+/// One layer's runtime config: which [`Scenery`] field, file suffix, horizontal/vertical
+/// parallax, z depth, tile width, and whether it's the ground-anchored foreground.
+struct LayerSpec {
+    suffix: &'static str,
+    hfactor: f32,
+    vfactor: f32,
+    z: f32,
+    width: f32,
+    ground: bool,
+}
+
+const LAYERS: [LayerSpec; 4] = [
+    LayerSpec {
+        suffix: "far",
+        hfactor: 0.10,
+        vfactor: 0.0,
+        z: -40.0,
+        width: FAR_W,
+        ground: false,
+    },
+    LayerSpec {
+        suffix: "mid",
+        hfactor: 0.30,
+        vfactor: 0.14,
+        z: -30.0,
+        width: NEAR_W,
+        ground: false,
+    },
+    LayerSpec {
+        suffix: "near",
+        hfactor: 0.55,
+        vfactor: 0.28,
+        z: -20.0,
+        width: NEAR_W,
+        ground: false,
+    },
+    LayerSpec {
+        suffix: "fg",
+        hfactor: 1.10,
+        vfactor: 0.0,
+        z: 30.0,
+        width: NEAR_W,
+        ground: true,
+    },
 ];
 
 /// The 12 shipped scenery sets (also the editor's cycle order).
@@ -57,6 +95,7 @@ struct ParallaxTile {
     vfactor: f32,
     span: f32,
     slot: i32,
+    ground: bool,
 }
 
 pub struct SceneryPlugin;
@@ -68,42 +107,48 @@ impl Plugin for SceneryPlugin {
     }
 }
 
-/// Spawn the pooled tile sprites for a room's scenery `set` (no-op if empty/unknown).
-/// Tagged [`MapEntity`] so they clear on the next room load.
-pub(crate) fn spawn_scenery(commands: &mut Commands, assets: &GameAssets, set: &str) {
-    if set.is_empty() {
-        return;
-    }
-    for (suffix, hfactor, vfactor, z) in LAYERS {
-        let key = format!("{set}_{suffix}.png");
+/// Spawn the pooled tile sprites for a room's [`Scenery`]. Each layer is sourced from its
+/// own set (`""` = skip), so layers mix freely. Tagged [`MapEntity`] to clear on reload.
+pub(crate) fn spawn_scenery(commands: &mut Commands, assets: &GameAssets, scenery: &Scenery) {
+    for spec in &LAYERS {
+        let set = match spec.suffix {
+            "far" => &scenery.far,
+            "mid" => &scenery.mid,
+            "near" => &scenery.near,
+            _ => &scenery.fg,
+        };
+        if set.is_empty() {
+            continue;
+        }
+        let key = format!("{set}/{}.png", spec.suffix);
         let Some(handle) = assets.scenery.get(&key) else {
             continue;
         };
-        for slot in 0..POOL {
+        let pool = (VIEW_HALF_W * 2.0 / spec.width).ceil() as i32 + 2;
+        for slot in 0..pool {
             commands.spawn((
                 MapEntity,
                 ParallaxTile {
-                    hfactor,
-                    vfactor,
-                    span: SCENERY_W,
+                    hfactor: spec.hfactor,
+                    vfactor: spec.vfactor,
+                    span: spec.width,
                     slot,
+                    ground: spec.ground,
                 },
                 Sprite {
                     image: handle.clone(),
-                    custom_size: Some(Vec2::new(SCENERY_W, SCENERY_H)),
+                    custom_size: Some(Vec2::new(spec.width, SCENERY_H)),
                     ..default()
                 },
-                Transform::from_xyz(0.0, 0.0, z),
+                Transform::from_xyz(0.0, 0.0, spec.z),
             ));
         }
     }
 }
 
-/// Slide every layer tile by its parallax factor: horizontally it wraps so the layer
-/// loops across any room width; vertically it stays anchored in the world (smaller
-/// factor = drifts less), so the backdrop scrolls down as you climb instead of riding up
-/// with the camera. The far sky (vfactor 0) keeps filling behind any gaps the nearer,
-/// transparent-topped layers leave.
+/// Reposition every layer tile: wrap horizontally to loop across any room width, and set
+/// the vertical position — a ground-anchored foreground stays at the world floor; the
+/// background drifts with vertical parallax (far locked, nearer layers more).
 fn parallax(
     camera: Query<(&Transform, &Projection), With<GameCamera>>,
     mut tiles: Query<(&ParallaxTile, &mut Transform), Without<GameCamera>>,
@@ -121,6 +166,10 @@ fn parallax(
         let base = cam.x * (1.0 - tile.hfactor); // unwrapped x of tile index 0
         let first = ((cam.x - half_w - base) / tile.span).floor() as i32;
         tf.translation.x = base + (first + tile.slot) as f32 * tile.span;
-        tf.translation.y = cam.y * (1.0 - tile.vfactor);
+        tf.translation.y = if tile.ground {
+            GROUND_ANCHOR
+        } else {
+            cam.y * (1.0 - tile.vfactor)
+        };
     }
 }

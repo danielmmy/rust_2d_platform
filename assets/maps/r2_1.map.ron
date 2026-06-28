@@ -11,7 +11,7 @@
     ],
     enemies: [
     ],
-    scenery: "misty_swamp",
+    scenery: (far: "misty_swamp", mid: "misty_swamp", near: "misty_swamp", fg: "misty_swamp"),
     bg: [0.16, 0.32, 0.32],
     tiles: [
         "#########..#############################",

@@ -11,7 +11,7 @@
     ],
     enemies: [
     ],
-    scenery: "crystal_grotto",
+    scenery: (far: "crystal_grotto", mid: "crystal_grotto", near: "crystal_grotto", fg: "crystal_grotto"),
     bg: [0.24, 0.16, 0.32],
     tiles: [
         "########################################",

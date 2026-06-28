@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Generate the 12 parallax scenery sets into assets/scenery/.
+"""Generate the 12 parallax scenery sets into assets/scenery/<set>/.
 
-Each set is 4 horizontally-tileable layers, 480x560:
-  <set>_far.png   opaque sky gradient + distant ridge + accents (parallax 0.10)
-  <set>_mid.png   silhouette band, transparent above            (parallax 0.30)
-  <set>_near.png  closer, darker silhouette band                 (parallax 0.55)
-  <set>_fg.png    foreground tufts/overhang, mostly transparent  (parallax 1.15)
+Each set has four tileable layers (mix-and-match per room via the level builder):
+  far.png   wide, seamless sky gradient + faint distant haze (no discrete features)
+  mid.png   silhouette band, transparent above
+  near.png  closer, darker silhouette band
+  fg.png    SPARSE foreground tufts along the bottom edge (drawn in front of the player)
 
-Silhouettes use integer-frequency sine sums so the left/right edges meet (seamless
-looping); scattered motifs are wrapped across the seam. Run:  python3 tools/gen_scenery.py
+Silhouettes/haze use integer-frequency sine sums so the edges meet (seamless looping);
+scattered motifs wrap across the seam. Run:  python3 tools/gen_scenery.py
 """
 import math
 import os
@@ -16,154 +16,150 @@ import random
 
 from PIL import Image, ImageDraw
 
-W, H = 480, 560
+H = 560
+FAR_W = 1440   # wide so the sky never visibly repeats across a room
+W = 960        # mid / near / fg width (>= the 960 viewport, so no on-screen repeat)
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "scenery")
-os.makedirs(OUT, exist_ok=True)
 
 
 def lerp(a, b, t):
     return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
 
 
-def ridge(base, amp, comps, seed):
-    """A seamless top-edge height function y(x) (smaller = higher)."""
+def ridge(width, base, amp, comps, seed):
     rnd = random.Random(seed)
     phs = [rnd.uniform(0, math.tau) for _ in comps]
     norm = sum(a for a, _ in comps)
     def y(x):
-        t = x / W
+        t = x / width
         v = sum(a * math.sin(t * math.tau * f + p) for (a, f), p in zip(comps, phs))
         return base + amp * (v / norm)
     return y
 
 
-def fill_below(px, yf, color, alpha=255, top=0):
-    for x in range(W):
-        y0 = max(top, int(yf(x)))
-        for y in range(y0, H):
-            px[x, y] = (*color, alpha)
+def fill_below(px, width, yf, color):
+    for x in range(width):
+        for y in range(max(0, int(yf(x))), H):
+            px[x, y] = (*color, 255)
 
 
 SHAPES = {
-    "hills": (0.46, 70, [(1, 1), (0.5, 2), (0.3, 3)]),
-    "mtns":  (0.40, 120, [(1, 1), (0.7, 2), (0.6, 4), (0.4, 7)]),
-    "dunes": (0.55, 55, [(1, 1), (0.45, 2)]),
-    "flat":  (0.58, 26, [(1, 2), (0.4, 5)]),
+    "hills": (0.46, 70, [(1, 2), (0.5, 3), (0.3, 5)]),
+    "mtns":  (0.40, 120, [(1, 2), (0.7, 3), (0.6, 6), (0.4, 11)]),
+    "dunes": (0.55, 55, [(1, 1), (0.45, 3)]),
+    "flat":  (0.58, 26, [(1, 3), (0.4, 7)]),
 }
 
-# name, sky_top, sky_bottom, far, mid, near, fg, accent, shape
+# name, sky_top, sky_bottom, far, mid, near, fg, shape
 SETS = [
-    ("forest_meadow", (150, 205, 235), (208, 232, 205), (120, 165, 120), (74, 140, 84), (44, 96, 60), (24, 66, 44), "sun", "trees"),
-    ("deep_caves", (26, 24, 44), (44, 40, 66), (52, 48, 82), (40, 36, 64), (26, 22, 44), (16, 14, 30), "glow", "cave"),
-    ("snowy_mountains", (188, 210, 234), (232, 240, 248), (180, 196, 220), (150, 170, 200), (120, 140, 176), (208, 222, 238), "snow", "mtns"),
-    ("sandy_beach", (140, 206, 226), (236, 240, 210), (120, 196, 196), (224, 206, 150), (200, 178, 120), (150, 128, 84), "sun", "dunes"),
-    ("desolate_desert", (224, 178, 120), (240, 214, 160), (214, 158, 104), (196, 132, 84), (160, 100, 64), (118, 72, 48), "sun", "dunes"),
-    ("mushroom_hollow", (40, 30, 56), (70, 44, 78), (96, 58, 104), (70, 50, 96), (48, 36, 72), (30, 24, 50), "glow", "trees"),
-    ("volcanic_depths", (40, 18, 20), (88, 32, 24), (120, 40, 28), (74, 28, 26), (44, 18, 20), (24, 12, 14), "ember", "mtns"),
-    ("sunset_cliffs", (242, 150, 96), (252, 206, 150), (210, 110, 110), (150, 70, 96), (96, 48, 78), (54, 30, 56), "sun", "mtns"),
-    ("crystal_grotto", (24, 30, 54), (40, 52, 86), (70, 96, 150), (54, 74, 124), (36, 50, 92), (22, 32, 64), "glow", "crystal"),
-    ("autumn_woods", (210, 188, 150), (236, 220, 184), (196, 150, 96), (180, 108, 56), (140, 74, 44), (96, 50, 34), "sun", "trees"),
-    ("misty_swamp", (110, 130, 120), (170, 184, 168), (120, 142, 128), (78, 104, 90), (52, 76, 66), (34, 54, 48), "mist", "trees"),
-    ("starry_void", (10, 10, 26), (24, 18, 46), (40, 32, 70), (28, 24, 54), (18, 16, 40), (12, 10, 28), "stars", "flat"),
+    ("forest_meadow", (150, 205, 235), (208, 232, 205), (150, 188, 160), (74, 140, 84), (44, 96, 60), (26, 70, 46), "trees"),
+    ("deep_caves", (26, 24, 44), (44, 40, 66), (40, 36, 60), (40, 36, 64), (26, 22, 44), (16, 14, 30), "cave"),
+    ("snowy_mountains", (188, 210, 234), (232, 240, 248), (196, 210, 230), (150, 170, 200), (120, 140, 176), (210, 224, 240), "mtns"),
+    ("sandy_beach", (140, 206, 226), (236, 240, 210), (170, 214, 214), (224, 206, 150), (200, 178, 120), (120, 170, 120), "dunes"),
+    ("desolate_desert", (224, 178, 120), (244, 222, 175), (224, 178, 128), (196, 132, 84), (160, 100, 64), (118, 72, 48), "dunes"),
+    ("mushroom_hollow", (40, 30, 56), (70, 44, 78), (64, 46, 84), (70, 50, 96), (48, 36, 72), (30, 24, 50), "trees"),
+    ("volcanic_depths", (40, 18, 20), (88, 32, 24), (74, 30, 26), (74, 28, 26), (44, 18, 20), (24, 12, 14), "mtns"),
+    ("sunset_cliffs", (242, 150, 96), (252, 214, 162), (220, 132, 116), (150, 70, 96), (96, 48, 78), (54, 30, 56), "mtns"),
+    ("crystal_grotto", (24, 30, 54), (40, 52, 86), (48, 64, 110), (54, 74, 124), (36, 50, 92), (22, 32, 64), "crystal"),
+    ("autumn_woods", (210, 188, 150), (238, 224, 190), (200, 162, 110), (180, 108, 56), (140, 74, 44), (96, 50, 34), "trees"),
+    ("misty_swamp", (110, 130, 120), (172, 186, 170), (130, 150, 138), (78, 104, 90), (52, 76, 66), (34, 54, 48), "trees"),
+    ("starry_void", (10, 10, 26), (24, 18, 46), (30, 26, 56), (28, 24, 54), (18, 16, 40), (12, 10, 28), "flat"),
 ]
 
 
-def scatter(draw, motif, color, edge_y, seed, count, size):
-    """Place a motif along the silhouette top edge, wrapped across the seam."""
+def scatter(draw, motif, color, edge_y, width, seed, count, size):
     rnd = random.Random(seed)
     for _ in range(count):
-        x = rnd.uniform(0, W)
-        for dx in (-W, 0, W):
-            cx = x + dx
-            top = edge_y(x % W)
+        x = rnd.uniform(0, width)
+        for dx in (-width, 0, width):
+            cx, top = x + dx, edge_y(x % width)
             if motif == "tree":
                 w = size * rnd.uniform(0.7, 1.2)
                 draw.polygon([(cx - w, top + size * 0.2), (cx + w, top + size * 0.2), (cx, top - size)], fill=(*color, 255))
             elif motif == "crystal":
-                w = size * 0.5
+                w = size * 0.45
                 draw.polygon([(cx - w, top), (cx + w, top), (cx, top - size * rnd.uniform(1.0, 2.0))], fill=(*color, 255))
 
 
-def gen(name, sky_top, sky_bot, far, mid, near, fg, accent, shape):
+def gen(name, sky_top, sky_bot, far, mid, near, fg, shape):
     rnd = random.Random(hash(name) & 0xffff)
+    folder = os.path.join(OUT, name)
+    os.makedirs(folder, exist_ok=True)
 
-    # ---- far: opaque sky + distant ridge + accent ----
-    far_img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+    # ---- far: wide seamless sky gradient + a faint distant haze (no discrete feature) --
+    far_img = Image.new("RGBA", (FAR_W, H), (0, 0, 0, 255))
     fp = far_img.load()
     for y in range(H):
         col = lerp(sky_top, sky_bot, y / H)
-        for x in range(W):
+        for x in range(FAR_W):
             fp[x, y] = (*col, 255)
-    fd = ImageDraw.Draw(far_img)
-    if accent in ("sun", "ember"):
-        sx, sy = W * 0.7, H * 0.26
-        glow = lerp(sky_top, (255, 244, 210) if accent == "sun" else (255, 150, 60), 0.6)
-        for r in range(90, 0, -10):
-            fd.ellipse([sx - r, sy - r, sx + r, sy + r], fill=(*glow, 26))
-        fd.ellipse([sx - 34, sy - 34, sx + 34, sy + 34], fill=(255, 240, 205, 255) if accent == "sun" else (255, 170, 70, 255))
-    if accent == "stars" or accent == "glow":
-        for _ in range(70):
-            x, y = rnd.uniform(0, W), rnd.uniform(0, H * 0.8)
-            s = rnd.choice([1, 1, 2])
-            c = (235, 235, 255) if accent == "stars" else lerp(far, (160, 255, 220), 0.8)
-            for dx in (-W, 0, W):
-                fd.ellipse([x + dx - s, y - s, x + dx + s, y + s], fill=(*c, rnd.randint(120, 255)))
-    far_edge = ridge(H * 0.60, 36, [(1, 1), (0.5, 2), (0.3, 3)], rnd.random())
-    fill_below(fp, far_edge, far)
+    haze = ridge(FAR_W, H * 0.66, 24, [(1, 2), (0.5, 4), (0.3, 6)], rnd.random())
+    haze_col = lerp(far, sky_bot, 0.35)
+    fill_below(fp, FAR_W, haze, haze_col)
 
     base, amp, comps = SHAPES.get(shape, SHAPES["hills"])
 
-    def band(color, base_f, amp_v, seed, motif=None, msize=46, mcount=10):
+    def band(color, base_f, amp_v, seed, motif=None, msize=60, mcount=14):
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         if shape == "cave":
-            # stalactites from the top instead of a ground ridge
-            top_edge = ridge(H * (1 - base_f) * 0.5, amp_v, comps, seed)
+            top_edge = ridge(W, H * (1 - base_f) * 0.5, amp_v, comps, seed)
+            p = img.load()
             for x in range(W):
-                y1 = int(top_edge(x))
-                for y in range(0, max(0, y1)):
-                    img.load()[x, y] = (*color, 255)
+                for y in range(0, max(0, int(top_edge(x)))):
+                    p[x, y] = (*color, 255)
             return img
-        edge = ridge(H * base_f, amp_v, comps, seed)
-        fill_below(img.load(), edge, color)
+        edge = ridge(W, H * base_f, amp_v, comps, seed)
+        fill_below(img.load(), W, edge, color)
         if motif:
-            scatter(d, motif, lerp(color, (0, 0, 0), 0.15), edge, seed + 9, mcount, msize)
+            scatter(d, motif, lerp(color, (0, 0, 0), 0.12), edge, W, seed + 9, mcount, msize)
         return img
 
     motif = {"trees": "tree", "crystal": "crystal"}.get(shape)
-    mid_img = band(mid, base + 0.06, amp * 0.7, rnd.random(), motif, 52, 8)
-    near_img = band(near, base - 0.04, amp, rnd.random(), motif, 70, 9)
+    mid_img = band(mid, base + 0.06, amp * 0.7, rnd.random(), motif, 58, 12)
+    near_img = band(near, base - 0.04, amp, rnd.random(), motif, 78, 14)
 
-    # ---- fg: bottom tufts + a couple of top overhangs, mostly transparent ----
+    # ---- fg: SPARSE tufts along the bottom edge (drawn in FRONT of the player) ----------
     fg_img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     fgd = ImageDraw.Draw(fg_img)
-    fg_edge = ridge(H * 0.90, 26, [(1, 2), (0.5, 3), (0.4, 5)], rnd.random())
-    fill_below(fg_img.load(), fg_edge, fg)
-    if shape in ("trees", "crystal"):
-        scatter(fgd, motif or "tree", fg, fg_edge, 7, 6, 90)
+    frnd = random.Random(hash(name) ^ 0x5151)
     if shape == "cave":
-        for _ in range(5):  # hanging stalactites
-            x = rnd.uniform(0, W)
+        # a few stalactites hang from the top edge
+        for _ in range(7):
+            x = frnd.uniform(0, W)
+            h = frnd.uniform(50, 150)
             for dx in (-W, 0, W):
-                fgd.polygon([(x + dx - 14, 0), (x + dx + 14, 0), (x + dx, rnd.uniform(60, 150))], fill=(*fg, 255))
+                fgd.polygon([(x + dx - 16, 0), (x + dx + 16, 0), (x + dx, h)], fill=(*fg, 255))
+    else:
+        # scattered blades/clumps rooted at the bottom; mostly empty so it never hides the player
+        for _ in range(22):
+            x = frnd.uniform(0, W)
+            h = frnd.uniform(40, 110)
+            lean = frnd.uniform(-14, 14)
+            wdt = frnd.uniform(7, 14)
+            col = lerp(fg, (0, 0, 0), frnd.uniform(0.0, 0.2))
+            for dx in (-W, 0, W):
+                bx = x + dx
+                fgd.polygon([(bx - wdt, H), (bx + wdt, H), (bx + lean, H - h)], fill=(*col, 255))
 
-    for suffix, im in (("far", far_img), ("mid", mid_img), ("near", near_img), ("fg", fg_img)):
-        im.save(os.path.join(OUT, f"{name}_{suffix}.png"))
+    far_img.save(os.path.join(folder, "far.png"))
+    mid_img.save(os.path.join(folder, "mid.png"))
+    near_img.save(os.path.join(folder, "near.png"))
+    fg_img.save(os.path.join(folder, "fg.png"))
     return far_img, mid_img, near_img, fg_img
 
 
 previews = []
 for s in SETS:
     far_img, mid_img, near_img, fg_img = gen(*s)
-    comp = far_img.copy()
+    comp = far_img.crop((0, 0, W, H)).copy()
     for layer in (mid_img, near_img, fg_img):
         comp.alpha_composite(layer)
     previews.append((s[0], comp))
-print("wrote", len(SETS) * 4, "layers to", OUT)
+print("wrote", len(SETS), "sets to", OUT)
 
-# contact sheet (4 cols x 3 rows)
 cols, rows, pad = 4, 3, 6
-tw, th = W // 2, H // 2
+tw, th = W // 3, H // 3
 sheet = Image.new("RGB", (cols * (tw + pad) + pad, rows * (th + pad + 12) + pad), (20, 20, 26))
 dd = ImageDraw.Draw(sheet)
 for i, (name, comp) in enumerate(previews):

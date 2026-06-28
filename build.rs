@@ -29,14 +29,7 @@ fn main() {
         "assets/sprites",
         ".png",
     );
-    emit(
-        &mut code,
-        "EMBEDDED_SCENERY",
-        "&[u8]",
-        "include_bytes!",
-        "assets/scenery",
-        ".png",
-    );
+    emit_nested(&mut code, "EMBEDDED_SCENERY", "assets/scenery", ".png");
     let out = Path::new(&env::var("OUT_DIR").unwrap()).join("embedded_assets.rs");
     fs::write(out, code).expect("write embedded_assets.rs");
 }
@@ -69,6 +62,42 @@ fn emit(code: &mut String, name: &str, ty: &str, macro_name: &str, dir: &str, su
     writeln!(code, "pub(crate) const {name}: &[(&str, {ty})] = &[").unwrap();
     for (key, path) in &entries {
         writeln!(code, "    ({key:?}, {macro_name}({path:?})),").unwrap();
+    }
+    writeln!(code, "];").unwrap();
+}
+
+/// Like [`emit`] but one level deep: every `dir/<sub>/<file><suffix>` becomes a
+/// `("<sub>/<file>", include_bytes!(..))` entry — so scenery sets live in their own
+/// folders and are keyed `"forest_meadow/far.png"`.
+fn emit_nested(code: &mut String, name: &str, dir: &str, suffix: &str) {
+    println!("cargo:rerun-if-changed={dir}");
+    let mut entries: Vec<(String, String)> = Vec::new();
+    if let Ok(subs) = fs::read_dir(dir) {
+        for sub in subs.flatten() {
+            if !sub.path().is_dir() {
+                continue;
+            }
+            let folder = sub.file_name().to_string_lossy().into_owned();
+            println!("cargo:rerun-if-changed={}", sub.path().display());
+            if let Ok(files) = fs::read_dir(sub.path()) {
+                for file in files.flatten() {
+                    let fname = file.file_name().to_string_lossy().into_owned();
+                    if fname.ends_with(suffix) {
+                        let abs = file.path().canonicalize().expect("canonicalize asset path");
+                        entries.push((
+                            format!("{folder}/{fname}"),
+                            abs.to_string_lossy().into_owned(),
+                        ));
+                        println!("cargo:rerun-if-changed={}", file.path().display());
+                    }
+                }
+            }
+        }
+    }
+    entries.sort();
+    writeln!(code, "pub(crate) const {name}: &[(&str, &[u8])] = &[").unwrap();
+    for (key, path) in &entries {
+        writeln!(code, "    ({key:?}, include_bytes!({path:?})),").unwrap();
     }
     writeln!(code, "];").unwrap();
 }

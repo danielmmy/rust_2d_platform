@@ -151,6 +151,46 @@ fn parse_mover(v: &ron::Value) -> Result<Mover, RonError> {
     })
 }
 
+/// Per-layer scenery selection: each parallax layer picks a **set** by name (empty =
+/// that layer is absent), so a room can mix elements — e.g. a desert sky over forest
+/// hills. The image for a layer is `"<set>/<layer>.png"`. See [`crate::scenery`].
+#[derive(Clone, Default)]
+pub struct Scenery {
+    pub far: String,
+    pub mid: String,
+    pub near: String,
+    pub fg: String,
+}
+
+/// Parse a `scenery` value: the per-layer struct `(far: "...", mid: ..., near: ..., fg:
+/// ...)`, or a bare set name string (legacy) used for every layer.
+fn parse_scenery(value: Option<&ron::Value>) -> Scenery {
+    let Some(v) = value else {
+        return Scenery::default();
+    };
+    if let Ok(set) = v.as_str() {
+        let s = set.to_string();
+        return Scenery {
+            far: s.clone(),
+            mid: s.clone(),
+            near: s.clone(),
+            fg: s,
+        };
+    }
+    let layer = |name: &str| {
+        v.try_field(name)
+            .and_then(|x| x.as_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+    Scenery {
+        far: layer("far"),
+        mid: layer("mid"),
+        near: layer("near"),
+        fg: layer("fg"),
+    }
+}
+
 /// A combatant in a room's **arena** (its `fog_wall` list). These spawn only once the
 /// player enters the room, and crossing the fog seals the exits until all are dead
 /// (see [`crate::boss`]). `boss` picks a boss over a normal enemy of `kind`.
@@ -193,9 +233,8 @@ pub struct MapData {
     pub fog_respawn: bool,
     /// Moving platforms (empty = none). See [`Mover`].
     pub movers: Vec<Mover>,
-    /// Parallax scenery set for this room (e.g. `"forest_meadow"`; empty = none).
-    /// See [`crate::scenery`].
-    pub scenery: String,
+    /// Per-layer parallax scenery for this room (mix-and-match; see [`Scenery`]).
+    pub scenery: Scenery,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -320,7 +359,7 @@ impl MapData {
             fog_wall,
             fog_respawn,
             movers,
-            scenery: optional_str("scenery")?,
+            scenery: parse_scenery(value.try_field("scenery")),
             bg,
             tiles,
         })
@@ -425,14 +464,18 @@ impl MapData {
              east: [\n{east}    ],\n    west: [\n{west}    ],\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
              fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
-             movers: [\n{movers}    ],\n    scenery: \"{}\",\n    \
+             movers: [\n{movers}    ],\n    \
+             scenery: (far: \"{}\", mid: \"{}\", near: \"{}\", fg: \"{}\"),\n    \
              bg: [{}, {}, {}],\n    tiles: [\n{rows}    ],\n)\n",
             self.name,
             self.solid,
             self.spikes,
             self.rocks,
             i32::from(self.fog_respawn),
-            self.scenery,
+            self.scenery.far,
+            self.scenery.mid,
+            self.scenery.near,
+            self.scenery.fg,
             self.bg[0],
             self.bg[1],
             self.bg[2],
@@ -1602,7 +1645,12 @@ mod tests {
                 speed: 60.0,
                 rest: 1000.0,
             }],
-            scenery: "forest_meadow".to_string(),
+            scenery: Scenery {
+                far: "snowy_mountains".to_string(),
+                mid: "forest_meadow".to_string(),
+                near: "forest_meadow".to_string(),
+                fg: "misty_swamp".to_string(),
+            },
             bg: [0.25, 0.5, 0.75],
             tiles: vec![
                 "####".to_string(),
@@ -1648,6 +1696,10 @@ mod tests {
         assert!(parsed.movers[0].mode == MoveMode::PingPong);
         assert_eq!(parsed.movers[0].speed, 60.0);
         assert_eq!(parsed.movers[0].rest, 1000.0);
-        assert_eq!(parsed.scenery, "forest_meadow");
+        // Scenery round-trips per layer (mix-and-match).
+        assert_eq!(parsed.scenery.far, "snowy_mountains");
+        assert_eq!(parsed.scenery.mid, "forest_meadow");
+        assert_eq!(parsed.scenery.near, "forest_meadow");
+        assert_eq!(parsed.scenery.fg, "misty_swamp");
     }
 }

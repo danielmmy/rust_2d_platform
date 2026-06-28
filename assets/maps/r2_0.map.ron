@@ -15,7 +15,7 @@
         // once: a 3-tile lift that rises to the top and stays there.
         (tiles: [(18, 18), (19, 18), (20, 18)], path: [(18, 6)], mode: "once", speed: 55, rest: 1000),
     ],
-    scenery: "autumn_woods",
+    scenery: (far: "autumn_woods", mid: "autumn_woods", near: "autumn_woods", fg: "autumn_woods"),
     bg: [0.32, 0.32, 0.16],
     tiles: [
         "#########..#############################",

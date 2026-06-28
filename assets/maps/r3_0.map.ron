@@ -11,7 +11,7 @@
     ],
     enemies: [
     ],
-    scenery: "desolate_desert",
+    scenery: (far: "desolate_desert", mid: "desolate_desert", near: "desolate_desert", fg: "desolate_desert"),
     bg: [0.24, 0.32, 0.16],
     tiles: [
         "#########..#############################",

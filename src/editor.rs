@@ -29,7 +29,7 @@ use crate::scenery;
 use crate::state::GameState;
 use crate::world::{
     ArenaSpawn, BENCH_GLYPH, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH, GameAssets,
-    LevelRoot, MapData, Mover, START_MARKER, Teleport, map_fs_path,
+    LevelRoot, MapData, Mover, START_MARKER, Scenery, Teleport, map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -108,7 +108,8 @@ struct EditBuffer {
     fog_wall: Vec<ArenaSpawn>, // arena combatants (hand-authored; preserved across edits)
     fog_respawn: bool,        // arena re-arms on bench rest (preserved across edits)
     movers: Vec<Mover>,       // moving platforms (hand-authored; preserved across edits)
-    scenery: String,          // parallax scenery set (cycled with `V`)
+    scenery: Scenery,         // per-layer parallax scenery (V picks layer, C picks set)
+    scenery_slot: usize,      // which scenery layer the `C` key cycles (0=far..3=fg)
     bg: [f32; 3],
     bg_index: usize,
     cursor: (usize, usize), // (col, row)
@@ -467,15 +468,15 @@ fn edit_tiles(
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyV) {
-        buffer.scenery = next_scenery(&buffer.scenery);
-        buffer.status = format!(
-            "scenery: {}",
-            if buffer.scenery.is_empty() {
-                "none"
-            } else {
-                &buffer.scenery
-            }
-        );
+        buffer.scenery_slot = (buffer.scenery_slot + 1) % 4;
+        buffer.status = scenery_status(&buffer.scenery, buffer.scenery_slot);
+        changed = true;
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        let slot = buffer.scenery_slot;
+        let next = next_scenery(scenery_layer(&buffer.scenery, slot));
+        set_scenery_layer(&mut buffer.scenery, slot, next);
+        buffer.status = scenery_status(&buffer.scenery, slot);
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyS) {
@@ -489,11 +490,38 @@ fn edit_tiles(
     }
 }
 
-/// Cycle a room's scenery set: none → each [`scenery::SETS`] entry → none.
+/// The four scenery layers in slot order.
+const SCENERY_LAYERS: [&str; 4] = ["far", "mid", "near", "fg"];
+
+/// Cycle one layer's set: none → each [`scenery::SETS`] entry → none.
 fn next_scenery(current: &str) -> String {
     let order: Vec<&str> = std::iter::once("").chain(scenery::SETS).collect();
     let i = order.iter().position(|s| *s == current).unwrap_or(0);
     order[(i + 1) % order.len()].to_string()
+}
+
+fn scenery_layer(s: &Scenery, slot: usize) -> &str {
+    [&s.far, &s.mid, &s.near, &s.fg][slot.min(3)]
+}
+
+fn set_scenery_layer(s: &mut Scenery, slot: usize, value: String) {
+    *[&mut s.far, &mut s.mid, &mut s.near, &mut s.fg][slot.min(3)] = value;
+}
+
+/// One-line summary of all four layers, with the active slot bracketed.
+fn scenery_status(s: &Scenery, slot: usize) -> String {
+    let parts: Vec<String> = (0..4)
+        .map(|i| {
+            let v = scenery_layer(s, i);
+            let v = if v.is_empty() { "none" } else { v };
+            if i == slot {
+                format!("[{} {v}]", SCENERY_LAYERS[i])
+            } else {
+                format!("{} {v}", SCENERY_LAYERS[i])
+            }
+        })
+        .collect();
+    format!("scenery (V=layer C=set): {}", parts.join("  "))
 }
 
 fn draw_tiles(
@@ -1361,7 +1389,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         fog_wall: Vec::new(),
         fog_respawn: false,
         movers: Vec::new(),
-        scenery: String::new(),
+        scenery: Scenery::default(),
         bg,
         tiles: grid
             .into_iter()
@@ -1397,7 +1425,13 @@ fn default_room(gx: i32, gy: i32, bg: [f32; 3]) -> MapData {
         }
     }
     let mut map = standard_map(bg, g);
-    map.scenery = scenery_for(gx, gy).to_string();
+    let set = scenery_for(gx, gy).to_string();
+    map.scenery = Scenery {
+        far: set.clone(),
+        mid: set.clone(),
+        near: set.clone(),
+        fg: set,
+    };
     map
 }
 
@@ -1453,7 +1487,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         fog_wall: Vec::new(),
         fog_respawn: false,
         movers: Vec::new(),
-        scenery: String::new(),
+        scenery: Scenery::default(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }

@@ -280,16 +280,28 @@ the viewport; larger rooms stay at 1:1 and scroll.
 
 ### Parallax scenery
 
-Each room can name a **scenery set** (`scenery: "forest_meadow"`) — a layered, looping
-backdrop that gives depth and motion. A set is **four tileable layers** (a far sky plus
-three silhouette bands); [`scenery`](src/scenery.rs) drifts each at a different parallax
-speed in **both axes** (far barely moves, nearer layers more), **wraps them horizontally**
-so any room width loops, and uses **vertical parallax** so the backdrop scrolls down as you
-climb instead of riding up with the camera. All layers sit **behind** gameplay, so scenery
-never covers the player. Twelve sets ship — **forest meadow, deep caves, snowy mountains, sandy beach,
-desolate desert, mushroom hollow, volcanic depths, sunset cliffs, crystal grotto, autumn
-woods, misty swamp, starry void** — and the builder cycles a room through them with `V`.
-The art lives in `assets/scenery/` (regenerate/retheme with `tools/gen_scenery.py`).
+Rooms get a layered, looping backdrop — **mix-and-match per layer**, so each of the four
+layers picks its own set:
+
+```ron
+scenery: (far: "snowy_mountains", mid: "forest_meadow", near: "forest_meadow", fg: "misty_swamp"),
+```
+
+The layers are **far** (a wide, seamless sky), **mid**/**near** (silhouette bands), and
+**fg** (a sparse foreground); [`scenery`](src/scenery.rs) handles them Silksong-style:
+
+- **far/mid/near** sit *behind* gameplay; they **wrap horizontally** (any room width loops)
+  and use **vertical parallax** so the backdrop scrolls down as you climb rather than
+  riding up with the camera (the far sky stays put behind, always filling).
+- **fg** is a real *foreground* drawn **in front** of the player but **anchored to the
+  ground**, so its sparse tufts sit at your feet and scroll off as you rise — never
+  covering you.
+
+Twelve sets ship — **forest meadow, deep caves, snowy mountains, sandy beach, desolate
+desert, mushroom hollow, volcanic depths, sunset cliffs, crystal grotto, autumn woods,
+misty swamp, starry void** — each in `assets/scenery/<set>/` (`far/mid/near/fg.png`). In
+the builder, **`V`** picks which layer you're editing and **`C`** cycles that layer's set
+(including *none*). Regenerate/retheme with `tools/gen_scenery.py`.
 
 ### Level builder
 
@@ -306,7 +318,7 @@ never reach the builder — the shipped `assets/maps/` levels stay read-only.
 | arrows | move cursor | `[` / `]` | width − / + |
 | `Space` | paint brush | `-` / `=` | height − / + |
 | `X` | erase | `B` | recolour |
-| `Tab` | cycle brush | `V` | cycle scenery set |
+| `Tab` | cycle brush | `V` / `C` | scenery: pick layer / set |
 | `S` | save | `Enter` | rename (type a name) |
 | `M` | room manager | `Esc` | leave the builder |
 | `Space` (Portal/Door brush) | start a portal / door link | | |
@@ -398,6 +410,13 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — Reworked **scenery** to be mix-and-match and more Silksong-like. Each room
+  now picks a set **per layer** (`scenery: (far:…, mid:…, near:…, fg:…)`), so backdrops blend;
+  the builder edits a layer with **`V`** and its set with **`C`**. The **fg** is now a real
+  foreground — sparse tufts drawn **in front** of the player but **ground-anchored** so it
+  never hides you or rides up as you climb. The **far** sky is wider and seamless (no more
+  repeating "sun"); mid/near keep horizontal wrap + vertical parallax. Sets moved to
+  `assets/scenery/<set>/{far,mid,near,fg}.png` (nested embedding in `build.rs`).
 - **2026-06-27** — Added **parallax scenery** ([`scenery`](src/scenery.rs)). Each room can
   name a **scenery set**; the system spawns its four tileable layers (far/mid/near + a
   foreground) and drifts each at its own parallax speed, **wrapping horizontally** so any
