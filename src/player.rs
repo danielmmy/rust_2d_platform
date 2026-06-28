@@ -8,8 +8,10 @@
 //! * **Variable height** — releasing jump early cuts the rise short.
 //! * **Asymmetric gravity** — you fall faster than you rise (snappy, not floaty).
 //! * **Apex control** — slightly reduced gravity near the peak for air control.
-//! * **Wall slide + wall jump** — hold into a wall in the air to cling and slow your
-//!   fall, then jump to launch up and away (a brief control lockout keeps the launch).
+//! * **Wall slide + wall jump** (Hollow-Knight style) — touch a wall in the air to
+//!   **auto-cling** and slow your fall; press **away** to let go. Jumping launches up and
+//!   away from the wall (a brief control lockout keeps the launch), so you can zig-zag
+//!   between facing walls.
 
 use bevy::prelude::*;
 
@@ -155,18 +157,19 @@ pub(crate) fn movement(
         jump.wall_lock = (jump.wall_lock - dt).max(0.0);
 
         if !stunned {
-            // --- wall cling: airborne + holding into a wall that's there ---
+            // --- wall cling (Hollow-Knight style): grab automatically on contact while
+            // airborne; let go by pressing *away* from the wall (or off the ground). ---
             let here = transform.translation.truncate();
-            let wall_dir = if !jump.grounded
-                && intent.move_x > 0.1
+            let wall_dir = if jump.grounded {
+                0.0
+            } else if intent.move_x > -0.1
                 && physics::wall_at(&solids, &platforms, here, PLAYER_HALF, 1.0)
             {
-                1.0
-            } else if !jump.grounded
-                && intent.move_x < -0.1
+                1.0 // right wall — clings unless you hold left (away)
+            } else if intent.move_x < 0.1
                 && physics::wall_at(&solids, &platforms, here, PLAYER_HALF, -1.0)
             {
-                -1.0
+                -1.0 // left wall — clings unless you hold right (away)
             } else {
                 0.0
             };
