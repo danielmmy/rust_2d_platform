@@ -5,8 +5,9 @@
 //!
 //! - **Tiles** — paint the current room with the game's own sprites, resize it
 //!   freely, recolour it, pick a **parallax scenery set** (`V`), trace a **multigrid
-//!   stamp** shape (`G`, then paint it with any brush), author a **moving platform**
-//!   (`P` — select an area, then mark its stops), and save.
+//!   stamp** shape (`G`, then paint it with any brush), author a **mover** — a moving
+//!   tile, be it a platform, spike, or door (`P` — select an area, then mark its stops),
+//!   and save.
 //! - **Rooms** (`M`) — a map of every room where you select one to edit, **add**,
 //!   **delete**, **reorder** (grab + move), or **reset** to the default 12.
 //!
@@ -350,9 +351,9 @@ fn edit_tiles(
             // A single cell is just normal painting, so clear the shape rather than keep it.
             if shape.len() <= 1 {
                 buffer.stamp.clear();
-                buffer.status = "stamp cleared — single-cell painting".to_string();
+                buffer.status = "stamp cleared - single-cell painting".to_string();
             } else {
-                buffer.status = format!("stamp: {} cells — paint with any brush", shape.len());
+                buffer.status = format!("stamp: {} cells - paint with any brush", shape.len());
                 buffer.stamp = shape;
             }
         } else if keys.just_pressed(KeyCode::Escape) {
@@ -604,7 +605,7 @@ fn edit_tiles(
         changed = true;
     }
     if keys.just_pressed(KeyCode::KeyP) {
-        // P on an existing moving platform removes it; otherwise it starts authoring one.
+        // P on an existing mover removes it; otherwise it starts authoring one.
         let here = (buffer.cursor.0 as i32, buffer.cursor.1 as i32);
         if let Some(idx) = buffer.movers.iter().position(|m| m.tiles.contains(&here)) {
             buffer.movers.remove(idx);
@@ -616,7 +617,7 @@ fn edit_tiles(
             buffer.mover_mode = MoveMode::Loop;
             buffer.mover_speed = 60.0;
             buffer.mover_rest = 500.0;
-            buffer.status = "mover: trace the platform, P/enter next, esc cancels".to_string();
+            buffer.status = "mover: trace the tiles, P/enter next, esc cancels".to_string();
         }
         changed = true;
     }
@@ -921,16 +922,13 @@ fn draw_tiles(
         };
         match step {
             MoverStep::Area => (
-                format!(
-                    "MOVING PLATFORM — select area ({} cells)",
-                    buffer.mover_tiles.len()
-                ),
-                "move to trace the platform   |   P / enter: next   |   esc: cancel".to_string(),
+                format!("MOVER - select area ({} cells)", buffer.mover_tiles.len()),
+                "move to trace the tiles   |   P / enter: next   |   esc: cancel".to_string(),
                 "the first cell is the home anchor".to_string(),
             ),
             MoverStep::Path => (
                 format!(
-                    "MOVING PLATFORM — stops: {}   mode: {mode}   speed: {}   rest: {}ms",
+                    "MOVER - stops: {}   mode: {mode}   speed: {}   rest: {}ms",
                     buffer.mover_path.len(),
                     buffer.mover_speed,
                     buffer.mover_rest,
@@ -947,7 +945,7 @@ fn draw_tiles(
         };
         (
             format!("brush: {}{}", BRUSHES[buffer.brush].1, stamp_note),
-            "arrows move  |  space paint  |  X erase  |  tab brush  |  G stamp  |  P platform"
+            "arrows move  |  space paint  |  X erase  |  tab brush  |  G stamp  |  P mover"
                 .to_string(),
             "[ ] - =  resize  |  B colour  |  S save  |  M rooms  |  enter rename  |  esc exit"
                 .to_string(),
