@@ -1471,7 +1471,8 @@ fn spawn_bench_prompt(mut commands: Commands, existing: Query<(), With<BenchProm
             ..default()
         },
         TextColor(Color::srgb(0.96, 0.9, 0.6)),
-        Transform::from_xyz(0.0, 0.0, 20.0),
+        // Above the foreground scenery layer (z=30) so the hint is never hidden behind it.
+        Transform::from_xyz(0.0, 0.0, 40.0),
         Visibility::Hidden,
     ));
 }

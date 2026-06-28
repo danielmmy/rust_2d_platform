@@ -143,14 +143,18 @@ pub(crate) fn follow(
     };
     look.offset += (target_off - look.offset) * (4.0 * dt).min(1.0);
 
-    let focus = player_tf.translation.truncate() + Vec2::new(0.0, look.offset);
-    let desired = clamp_to_room(focus, room, VIEW_HALF * scale);
+    // Offset from where the camera *naturally* sits (the clamped follow point), then re-clamp
+    // — so the pan is visible even when the player is at a room edge (e.g. on the floor with
+    // headroom above), where adding to the player's world position would just clamp away.
+    let half = VIEW_HALF * scale;
+    let base = clamp_to_room(player_tf.translation.truncate(), room, half);
+    let desired = clamp_to_room(base + Vec2::new(0.0, look.offset), room, half);
     let current = camera_tf.translation.truncate();
     let next = if room_view.snap {
         room_view.snap = false;
         look.offset = 0.0; // don't carry a look-pan across a room change
         look.hold = 0.0;
-        clamp_to_room(player_tf.translation.truncate(), room, VIEW_HALF * scale)
+        base
     } else {
         current.lerp(desired, (8.0 * dt).min(1.0))
     };

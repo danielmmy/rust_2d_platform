@@ -476,9 +476,9 @@ const HIT_HALF: Vec2 = Vec2::new(28.0, 26.0);
 /// How far **below** the player a down-slash hitbox sits (the pogo strike). A bit beyond
 /// the feet so you can bounce a spike/enemy *before* your body touches it.
 const HIT_DOWN_REACH: f32 = 30.0;
-/// Upward bounce speed when a down-slash connects (Hollow-Knight pogo) — strong enough to
-/// gain real height and chain across hazards.
-const POGO_SPEED: f32 = 540.0;
+/// Upward bounce speed when a down-slash connects (Hollow-Knight pogo) — above the normal
+/// jump (560) so a bounce clearly gains height for traversal and chains across hazards.
+const POGO_SPEED: f32 = 740.0;
 /// Seconds of hazard immunity granted by a successful pogo, so bouncing across a spike pit
 /// never costs a heart even on a slightly late strike. Separate from i-frames (no flash).
 const POGO_GRACE: f32 = 0.3;
@@ -571,10 +571,11 @@ fn player_attack(
             _ => (Vec2::new(46.0, 48.0), Color::srgb(0.6, 0.9, 1.0)),
         };
         let (offset, rotation, flip) = if sword.down {
-            // Point the slash downward, under the player's feet.
+            // Point the slash downward, under the player's feet (clockwise so the arc
+            // sweeps *down*, not up).
             (
                 Vec2::new(0.0, -HIT_DOWN_REACH),
-                Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
                 false,
             )
         } else {
