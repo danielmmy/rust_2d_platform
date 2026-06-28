@@ -74,16 +74,27 @@ pub fn carry_delta(platforms: &Platforms, center: Vec2, half: Vec2) -> Option<Ve
 /// Push the AABB out of any platform it overlaps on the X axis (call after the static
 /// pass; `center` is already moved). `dx` gives the travel direction. Returns whether hit.
 pub fn resolve_platforms_x(platforms: &Platforms, center: &mut Vec2, half: Vec2, dx: f32) -> bool {
+    if dx == 0.0 {
+        return false;
+    }
     let mut hit = false;
     for b in &platforms.0 {
-        if dx != 0.0 && overlaps(*center, half, b) {
-            center.x = if dx > 0.0 {
-                b.center.x - b.half.x - half.x
-            } else {
-                b.center.x + b.half.x + half.x
-            };
-            hit = true;
+        if !overlaps(*center, half, b) {
+            continue;
         }
+        // A rider resting on (or within CARRY_EPS of) the platform's top isn't hitting its
+        // side. Skipping it stops a walking rider from being ejected sideways: carrying the
+        // rider can leave its feet a hair inside the box top, and this X pass runs before the
+        // Y pass that re-seats the feet, so the overlap would otherwise look like a wall hit.
+        if center.y - half.y >= b.center.y + b.half.y - CARRY_EPS {
+            continue;
+        }
+        center.x = if dx > 0.0 {
+            b.center.x - b.half.x - half.x
+        } else {
+            b.center.x + b.half.x + half.x
+        };
+        hit = true;
     }
     hit
 }
@@ -229,5 +240,39 @@ mod tests {
             10.0
         ));
         assert_eq!(center.x, 26.0);
+    }
+
+    #[test]
+    fn rider_on_platform_is_not_ejected_sideways() {
+        // Platform tile [0,32]×[0,32]; player (half 11×19) riding on top, walking right.
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(16.0, 16.0),
+            half: Vec2::splat(16.0),
+            delta: Vec2::ZERO,
+        }]);
+        // Feet a hair inside the top (y 31.5, just under the box top at 32) — the case that
+        // used to teleport the player to the platform's edge.
+        let mut center = Vec2::new(16.0, 50.5);
+        let hit = resolve_platforms_x(&platforms, &mut center, Vec2::new(11.0, 19.0), 5.0);
+        assert!(!hit, "a rider on top must not be pushed sideways");
+        assert_eq!(center.x, 16.0);
+    }
+
+    #[test]
+    fn side_hit_on_platform_is_ejected() {
+        // Platform tile [32,64]×[0,32]; player beside it (feet at y 0, well below the top),
+        // walking right into its face — still gets pushed out.
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(48.0, 16.0),
+            half: Vec2::splat(16.0),
+            delta: Vec2::ZERO,
+        }]);
+        let mut center = Vec2::new(30.0, 19.0);
+        let hit = resolve_platforms_x(&platforms, &mut center, Vec2::new(11.0, 19.0), 5.0);
+        assert!(hit);
+        assert!(
+            (center.x - (48.0 - 16.0 - 11.0)).abs() < 0.1,
+            "stop at the platform's left face"
+        );
     }
 }

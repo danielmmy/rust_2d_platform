@@ -435,6 +435,10 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-28** — Fixed a **mover riding** bug ([`physics`](src/physics.rs)): walking on a
+  moving platform could occasionally **teleport** the player to its side. The X-collision
+  pass now ignores a platform the player is resting on top of (the carry can sink the feet a
+  hair into the box before the Y pass re-seats them), so it's no longer mistaken for a wall.
 - **2026-06-28** — The level builder can now **author movers** (moving tiles — a platform,
   spike, door, …) ([`editor`](src/editor.rs)). Press **`P`** to (1) trace the tiles (first
   cell = home anchor) and (2) mark the stop points it travels through (`space`), tuning **mode**
