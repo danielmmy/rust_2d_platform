@@ -10,6 +10,7 @@
 use bevy::prelude::*;
 
 use crate::GameSet;
+use crate::audio::{PlaySfx, Sfx};
 use crate::hazards::RespawnPoint;
 use crate::player::{Player, Velocity};
 use crate::save::Save;
@@ -110,6 +111,7 @@ fn apply_damage(
     respawn: Res<RespawnPoint>,
     mut load: MessageWriter<LoadMap>,
     mut died: MessageWriter<Died>,
+    mut sfx: MessageWriter<PlaySfx>,
     mut player: Query<(&mut Transform, &mut Velocity), With<Player>>,
 ) {
     // Drain the queue (so none go stale); take the first hit's source. One hit per
@@ -123,6 +125,7 @@ fn apply_damage(
     }
 
     health.current -= 1;
+    sfx.write(PlaySfx(Sfx::Hurt));
     invuln.0 = IFRAMES;
     // Disarm teleporters: a respawn/knockback can leave the player on a portal pad,
     // and we don't want it to immediately fire and teleport them away.

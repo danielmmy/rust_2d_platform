@@ -4,6 +4,7 @@
 //!
 //! - `EMBEDDED_STORY_MAPS: &[(&str, &str)]` — `(room_name, ron_text)` for `assets/maps/`.
 //! - `EMBEDDED_SPRITES: &[(&str, &[u8])]` — `(file_name, png_bytes)` for `assets/sprites/`.
+//! - `EMBEDDED_SOUNDS: &[(&str, &[u8])]` — `(file_name, ogg_bytes)` for `assets/sounds/`.
 //!
 //! Each entry uses `include_str!`/`include_bytes!` on the file's absolute path, so the
 //! bytes are embedded and edits re-trigger the build.
@@ -30,6 +31,14 @@ fn main() {
         ".png",
     );
     emit_nested(&mut code, "EMBEDDED_SCENERY", "assets/scenery", ".png");
+    emit(
+        &mut code,
+        "EMBEDDED_SOUNDS",
+        "&[u8]",
+        "include_bytes!",
+        "assets/sounds",
+        ".ogg",
+    );
     let out = Path::new(&env::var("OUT_DIR").unwrap()).join("embedded_assets.rs");
     fs::write(out, code).expect("write embedded_assets.rs");
 }

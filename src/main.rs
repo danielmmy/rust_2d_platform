@@ -2,11 +2,13 @@
 //!
 //! Three large, interconnected, data-driven maps with platform challenges and
 //! environmental dangers (ground spikes, falling rocks, death pits); keyboard
-//! **and** gamepad input; and a responsive jump (coyote time, jump buffering,
-//! variable height, asymmetric gravity). Built as small Bevy plugins so it's easy
-//! to extend, with art and levels under `assets/` that are simple to replace.
+//! **and** gamepad input; a responsive jump (coyote time, jump buffering,
+//! variable height, asymmetric gravity); and synthesised sound effects. Built as
+//! small Bevy plugins so it's easy to extend, with art, levels, and sounds under
+//! `assets/` that are simple to replace.
 
 mod anim;
+mod audio;
 mod boss;
 mod camera;
 mod combat;
@@ -111,7 +113,9 @@ fn main() {
         menu::MenuPlugin,
         // The level builder is reachable from Builder saves (any build).
         editor::EditorPlugin,
-    ));
+    ))
+    // Sound effects (a separate call to stay within the plugin-tuple size limit).
+    .add_plugins(audio::AudioFxPlugin);
 
     app.run();
 }

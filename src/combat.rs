@@ -16,6 +16,7 @@ use bevy::prelude::*;
 
 use crate::GameSet;
 use crate::anim::{Clip, Playback};
+use crate::audio::{PlaySfx, Sfx};
 use crate::boss::{BOSS_HALF, Boss, BossFight};
 use crate::input::PlayerIntent;
 use crate::physics::{self, Solids};
@@ -411,6 +412,7 @@ pub(crate) struct Bloodstain;
 fn collect_energy(
     mut commands: Commands,
     mut energy: ResMut<Energy>,
+    mut sfx: MessageWriter<PlaySfx>,
     player: Query<&Transform, With<Player>>,
     orbs: Query<(Entity, &Transform), With<EnergyOrb>>,
 ) {
@@ -423,6 +425,7 @@ fn collect_energy(
         if delta.x < ORB_HALF.x + PLAYER_HALF.x && delta.y < ORB_HALF.y + PLAYER_HALF.y {
             energy.0 += ENERGY_PER_ORB;
             commands.entity(entity).despawn();
+            sfx.write(PlaySfx(Sfx::Pickup));
         }
     }
 }
@@ -497,6 +500,7 @@ fn player_attack(
     fight: Res<BossFight>,
     mut sword: ResMut<Sword>,
     mut commands: Commands,
+    mut sfx: MessageWriter<PlaySfx>,
     player: Query<(&Transform, &Sprite), With<Player>>,
     mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Player>>,
     mut bosses: Query<(Entity, &Transform, &mut Boss), Without<Player>>,
@@ -527,6 +531,12 @@ fn player_attack(
         sword.active = SWING_ACTIVE;
         sword.dir = if sprite.flip_x { -1.0 } else { 1.0 };
         sword.hit.clear();
+        // A heftier sound on the third hit (the combo finisher).
+        sfx.write(PlaySfx(if sword.step >= 3 {
+            Sfx::SlashHeavy
+        } else {
+            Sfx::Slash
+        }));
 
         // Slash visual — roughly matches the hitbox; bigger and gold on the finisher.
         let (size, color) = match sword.step {
@@ -561,6 +571,7 @@ fn player_attack(
             if delta.x < HIT_HALF.x + ENEMY_HALF.x && delta.y < HIT_HALF.y + ENEMY_HALF.y {
                 enemy.health -= damage;
                 sword.hit.insert(entity);
+                sfx.write(PlaySfx(Sfx::EnemyHit));
                 info!(
                     "hit enemy kind {} for {} ({} hp left)",
                     enemy.kind, damage, enemy.health
@@ -579,6 +590,7 @@ fn player_attack(
                     boss.health -= damage;
                     boss.flash = 0.12;
                     sword.hit.insert(entity);
+                    sfx.write(PlaySfx(Sfx::EnemyHit));
                 }
             }
         }

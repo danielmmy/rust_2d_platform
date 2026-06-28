@@ -1,2 +1,3 @@
 - up down look
 - downard slash jump
+- gate dowble jump, wall jump, dash (add enable disable options in editor and add option to give it to a boss as frop)

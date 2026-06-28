@@ -16,6 +16,7 @@
 use bevy::prelude::*;
 
 use crate::GameSet;
+use crate::audio::{PlaySfx, Sfx};
 use crate::health::{Hurt, Stun};
 use crate::input::PlayerIntent;
 use crate::physics::{self, Platforms, Solids};
@@ -24,6 +25,9 @@ use crate::state::GameState;
 
 /// Collision half-extents (the sprite is a touch larger).
 pub const PLAYER_HALF: Vec2 = Vec2::new(11.0, 19.0);
+
+/// Seconds between footstep sounds while running on the ground.
+const FOOTSTEP_INTERVAL: f32 = 0.30;
 
 #[derive(Component)]
 pub struct Player;
@@ -46,6 +50,8 @@ pub struct JumpState {
     /// Seconds of reduced horizontal control after a wall jump, so the launch off the
     /// wall isn't instantly cancelled by holding back toward it.
     wall_lock: f32,
+    /// Countdown to the next footstep sound while walking on the ground.
+    step_timer: f32,
 }
 
 impl JumpState {
@@ -141,6 +147,7 @@ pub(crate) fn movement(
     stun: Res<Stun>,
     abilities: Res<Abilities>,
     mut hurt: MessageWriter<Hurt>,
+    mut sfx: MessageWriter<PlaySfx>,
     mut query: Query<(&mut Transform, &mut Velocity, &mut JumpState, &mut Sprite), With<Player>>,
 ) {
     let dt = time.delta_secs();
@@ -217,6 +224,7 @@ pub(crate) fn movement(
                 jump.jumping = true;
                 jump.buffer = 0.0;
                 jump.coyote = 0.0;
+                sfx.write(PlaySfx(Sfx::Jump));
             } else if jump.buffer > 0.0 && wall_dir != 0.0 {
                 // wall jump: up and away from the wall, with a short control lockout
                 velocity.0.y = cfg.jump_speed;
@@ -225,6 +233,7 @@ pub(crate) fn movement(
                 jump.buffer = 0.0;
                 jump.wall = 0.0;
                 jump.wall_lock = cfg.wall_jump_lock;
+                sfx.write(PlaySfx(Sfx::WallJump));
             } else if intent.jump_pressed
                 && !jump.grounded
                 && abilities.double_jump
@@ -234,6 +243,7 @@ pub(crate) fn movement(
                 velocity.0.y = cfg.jump_speed;
                 jump.jumping = true;
                 jump.air_jump = false;
+                sfx.write(PlaySfx(Sfx::DoubleJump));
             }
 
             // --- variable height: releasing early cuts the rise ---
@@ -267,6 +277,7 @@ pub(crate) fn movement(
 
         // --- integrate + collide (X then Y), against the static grid then any moving
         // platforms. A platform the player is standing on first carries them along. ---
+        let was_grounded = jump.grounded;
         let mut center = transform.translation.truncate();
         if let Some(d) = physics::carry_delta(&platforms, center, PLAYER_HALF) {
             center += d;
@@ -298,6 +309,20 @@ pub(crate) fn movement(
             velocity.0.y = 0.0;
         }
         jump.grounded = sl || pl;
+
+        // --- footsteps + landing thump ---
+        if !was_grounded && jump.grounded && dy < 0.0 {
+            sfx.write(PlaySfx(Sfx::Land));
+        }
+        if jump.grounded && velocity.0.x.abs() > 20.0 {
+            jump.step_timer -= dt;
+            if jump.step_timer <= 0.0 {
+                sfx.write(PlaySfx(Sfx::Footstep));
+                jump.step_timer = FOOTSTEP_INTERVAL;
+            }
+        } else {
+            jump.step_timer = 0.0; // so the first step on moving off lands promptly
+        }
 
         transform.translation.x = center.x;
         transform.translation.y = center.y;
