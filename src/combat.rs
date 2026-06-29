@@ -511,6 +511,13 @@ struct Slash(f32);
 #[derive(Resource, Default)]
 pub(crate) struct PogoGrace(pub f32);
 
+/// Enemies/bosses already struck by the current slide, so a slide tackle hits each once.
+#[derive(Resource, Default)]
+struct SlideHits(HashSet<Entity>);
+
+/// Half-extents of the slide-tackle hitbox (low and a touch wider than the body, for reach).
+const SLIDE_HIT_HALF: Vec2 = Vec2::new(16.0, 12.0);
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // a Bevy system; distinct params
 fn player_attack(
     time: Res<Time>,
@@ -729,12 +736,63 @@ fn update_energy_hud(
     }
 }
 
+/// A **slide tackle**: while the player is mid-slide (see [`crate::player`]), their low body is
+/// a light melee hitbox — each enemy/boss it touches takes a small hit, once per slide.
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
+fn slide_attack(
+    stats: Res<Stats>,
+    fight: Res<BossFight>,
+    mut hits: ResMut<SlideHits>,
+    mut sfx: MessageWriter<PlaySfx>,
+    player: Query<(&Transform, &JumpState), With<Player>>,
+    mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Player>>,
+    mut bosses: Query<(Entity, &Transform, &mut Boss), Without<Player>>,
+) {
+    let Ok((player_tf, jump)) = player.single() else {
+        return;
+    };
+    if !jump.sliding() {
+        hits.0.clear(); // reset between slides
+        return;
+    }
+    let center = player_tf.translation.truncate();
+    let damage = (stats.sword_damage() / 2).max(1); // a light contact hit (half a sword swing)
+
+    for (entity, enemy_tf, mut enemy) in &mut enemies {
+        if hits.0.contains(&entity) {
+            continue;
+        }
+        let delta = (enemy_tf.translation.truncate() - center).abs();
+        if delta.x < SLIDE_HIT_HALF.x + ENEMY_HALF.x && delta.y < SLIDE_HIT_HALF.y + ENEMY_HALF.y {
+            enemy.health -= damage;
+            hits.0.insert(entity);
+            sfx.write(PlaySfx(Sfx::EnemyHit));
+        }
+    }
+    if fight.locked {
+        for (entity, boss_tf, mut boss) in &mut bosses {
+            if hits.0.contains(&entity) {
+                continue;
+            }
+            let delta = (boss_tf.translation.truncate() - center).abs();
+            if delta.x < SLIDE_HIT_HALF.x + BOSS_HALF.x && delta.y < SLIDE_HIT_HALF.y + BOSS_HALF.y
+            {
+                boss.health -= damage;
+                boss.flash = 0.12;
+                hits.0.insert(entity);
+                sfx.write(PlaySfx(Sfx::EnemyHit));
+            }
+        }
+    }
+}
+
 pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Energy>()
             .init_resource::<LostEnergy>()
+            .init_resource::<SlideHits>()
             .init_resource::<Sword>()
             .init_resource::<PogoGrace>()
             .add_systems(OnEnter(GameState::Playing), spawn_energy_hud)
@@ -744,6 +802,7 @@ impl Plugin for CombatPlugin {
                 Update,
                 (
                     player_attack,
+                    slide_attack,
                     enemy_death,
                     collect_energy,
                     recover_lost_energy,

@@ -264,6 +264,9 @@ fn control_player(
         let progress = (0.5 - 0.5 * velocity.0.y / denom).clamp(0.0, 1.0);
         let last = anim.clip.count.saturating_sub(1);
         anim.frame = ((progress * anim.clip.count as f32) as usize).min(last);
+    } else if jump.sliding() {
+        // Mid-slide: the low pose, held (no leg cycle even though we're moving fast).
+        anim.play(PLAYER_CROUCH);
     } else if jump.crouching() {
         // Crouched on the ground: crouch-walk if moving, else the static crouch pose.
         anim.play(if velocity.0.x.abs() > WALK_SPEED_MIN {

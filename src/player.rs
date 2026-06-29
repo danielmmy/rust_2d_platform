@@ -18,6 +18,10 @@
 //!   you from overhead** also forces a duck, and only crushes ([`Hurt`]) you if it keeps coming
 //!   and bites even the crouched box — riding a platform up or pressing one's side never forces
 //!   a crouch.
+//! * **Slide** — press **Down** while running or dashing to launch a low, momentum-carrying
+//!   slide that bleeds off with friction (tuned by `slide_*` in [`MovementConfig`]). It rides at
+//!   crouch height (slips under things) and lands a **light contact hit** on enemies it passes
+//!   through (see [`crate::combat`]). Needs the **Dash** ability (you must be running/dashing).
 
 use bevy::prelude::*;
 
@@ -77,6 +81,13 @@ pub struct JumpState {
     /// Crouched this frame: Down held on the ground, or kept crouched while a low ceiling
     /// blocks standing up. Shrinks the hitbox and caps speed to a crouch-walk.
     crouching: bool,
+    /// Seconds left in a **slide** (a low, momentum-carrying lunge; 0 = not sliding). Started
+    /// by pressing Down while running or dashing; deals a light contact hit (see [`crate::combat`]).
+    slide: f32,
+    /// Travel direction of the active slide (-1 / +1).
+    slide_dir: f32,
+    /// Seconds until another slide is allowed (covers the slide itself plus a brief cooldown).
+    slide_cd: f32,
 }
 
 impl JumpState {
@@ -88,6 +99,11 @@ impl JumpState {
     /// Whether the player is crouched (read by animation for the crouch / crouch-walk poses).
     pub fn crouching(&self) -> bool {
         self.crouching
+    }
+
+    /// Whether the player is mid-slide (read by animation and the slide-tackle hitbox).
+    pub fn sliding(&self) -> bool {
+        self.slide > 0.0
     }
 
     /// Whether the player is sprinting (read by animation for the run cycle).
@@ -238,6 +254,12 @@ pub struct MovementConfig {
     pub sprint_speed: f32,
     /// Crouch-walk speed (Down held while moving) — slower than `run_speed`, reduced hitbox.
     pub crouch_speed: f32,
+    /// Slide: launch speed, duration, ground friction (how fast the momentum bleeds off), and
+    /// the cooldown before another slide. Started by pressing Down while running/dashing.
+    pub slide_speed: f32,
+    pub slide_time: f32,
+    pub slide_friction: f32,
+    pub slide_cd: f32,
 }
 
 impl Default for MovementConfig {
@@ -263,6 +285,10 @@ impl Default for MovementConfig {
             dash_cd: 0.45,
             sprint_speed: 420.0,
             crouch_speed: 130.0,
+            slide_speed: 520.0,
+            slide_time: 0.45,
+            slide_friction: 900.0,
+            slide_cd: 0.4,
         }
     }
 }
@@ -321,6 +347,8 @@ pub(crate) fn movement(
         // --- dash: a quick horizontal burst once unlocked; air-dash refreshes on landing ---
         jump.dash = (jump.dash - dt).max(0.0);
         jump.dash_cd = (jump.dash_cd - dt).max(0.0);
+        jump.slide = (jump.slide - dt).max(0.0);
+        jump.slide_cd = (jump.slide_cd - dt).max(0.0);
         if jump.grounded {
             jump.air_dash = true;
         }
@@ -346,6 +374,9 @@ pub(crate) fn movement(
             sfx.write(PlaySfx(Sfx::Dash));
         }
         let dashing = jump.dash > 0.0;
+        // Were we running coming into this frame? Pressing Down sets `crouching`, which clears
+        // `jump.running` below — so capture it now, before that, for the slide trigger.
+        let was_running = jump.running;
 
         // --- crouch: hold Down on the ground to shrink the hitbox (fit under a one-tile gap or
         // a passing platform) and slow to a crouch-walk. A platform **descending onto you from
@@ -364,8 +395,6 @@ pub(crate) fn movement(
             && !stunned
             && ((jump.grounded && (intent.down || force_duck)) || (jump.crouching && !can_stand));
         jump.crouching = crouching;
-        let half = if crouching { CROUCH_HALF } else { PLAYER_HALF };
-        let crouch_drop = PLAYER_HALF.y - half.y;
 
         // Sprint state: decided while grounded (dash button held + moving), then left
         // untouched in the air so a jump/fall carries the run's momentum and resumes it on
@@ -378,7 +407,44 @@ pub(crate) fn movement(
                 && intent.move_x.abs() > 0.1;
         }
 
-        if !stunned && !dashing {
+        // --- slide: pressing Down while running or dashing launches a low, momentum-carrying
+        // slide that bleeds off with friction. It rides at crouch height and lands a light
+        // contact hit (see `crate::combat`); it ends on its timer or on leaving the ground. ---
+        if jump.grounded
+            && !stunned
+            && intent.down_pressed
+            && (was_running || dashing)
+            && jump.slide <= 0.0
+            && jump.slide_cd <= 0.0
+        {
+            jump.slide = cfg.slide_time;
+            jump.slide_cd = cfg.slide_time + cfg.slide_cd;
+            jump.slide_dir = if velocity.0.x.abs() > 1.0 {
+                velocity.0.x.signum()
+            } else if sprite.flip_x {
+                -1.0
+            } else {
+                1.0
+            };
+            jump.dash = 0.0; // a dash flows straight into the slide
+            velocity.0.x = jump.slide_dir * cfg.slide_speed.max(velocity.0.x.abs());
+            sfx.write(PlaySfx(Sfx::Dash)); // a whoosh as the slide kicks off
+        }
+        if !jump.grounded {
+            jump.slide = 0.0; // a slide is a ground move — drop it on leaving the ground
+        }
+        let sliding = jump.slide > 0.0;
+        let dashing = jump.dash > 0.0; // a slide consumes the dash, so recompute
+
+        // The slide rides low like a crouch; the box shrinks from the top, feet planted.
+        let half = if crouching || sliding {
+            CROUCH_HALF
+        } else {
+            PLAYER_HALF
+        };
+        let crouch_drop = PLAYER_HALF.y - half.y;
+
+        if !stunned && !dashing && !sliding {
             // --- wall cling (Hollow-Knight style): grab automatically on contact while
             // airborne; let go by pressing *away* from the wall (or off the ground). ---
             let here = transform.translation.truncate();
@@ -503,6 +569,13 @@ pub(crate) fn movement(
             if jump.wall != 0.0 && velocity.0.y < -cfg.wall_slide_speed {
                 velocity.0.y = -cfg.wall_slide_speed;
             }
+        }
+
+        // --- slide: keep the launch direction, bleed the speed off with friction (momentum),
+        // and face the way you're sliding. Gravity (above) keeps you on the ground. ---
+        if sliding {
+            velocity.0.x = approach(velocity.0.x, 0.0, cfg.slide_friction * dt);
+            sprite.flip_x = jump.slide_dir < 0.0;
         }
 
         // --- integrate + collide (X then Y), against the static grid then any moving

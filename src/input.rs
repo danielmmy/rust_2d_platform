@@ -16,6 +16,8 @@ pub struct PlayerIntent {
     pub up: bool,
     /// Down is held — crouches when grounded; aims a **pogo** down-slash when airborne.
     pub down: bool,
+    /// Down was pressed this frame (edge) — starts a **slide** when running/dashing.
+    pub down_pressed: bool,
     /// Jump was pressed this frame (edge) — feeds the jump buffer.
     pub jump_pressed: bool,
     /// Jump is currently held — feeds variable jump height.
@@ -162,6 +164,7 @@ fn gather(
     }
     let mut up = keys.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW]);
     let mut down = keys.any_pressed([KeyCode::ArrowDown, KeyCode::KeyS]);
+    let mut down_pressed = keys.any_just_pressed([KeyCode::ArrowDown, KeyCode::KeyS]);
     let mut jump_pressed = keys.any_just_pressed(JUMP_KEYS);
     let mut jump_held = keys.any_pressed(JUMP_KEYS);
     let mut interact = keys.just_pressed(KeyCode::KeyE);
@@ -187,6 +190,9 @@ fn gather(
         if gamepad.pressed(GamepadButton::DPadDown) || stick_y < -0.5 {
             down = true;
         }
+        if gamepad.just_pressed(GamepadButton::DPadDown) {
+            down_pressed = true;
+        }
         if gamepad.just_pressed(GamepadButton::South) {
             jump_pressed = true;
         }
@@ -210,6 +216,7 @@ fn gather(
     intent.move_x = move_x.clamp(-1.0, 1.0);
     intent.up = up;
     intent.down = down;
+    intent.down_pressed = down_pressed;
     intent.jump_pressed = jump_pressed;
     intent.jump_held = jump_held;
     intent.interact = interact;

@@ -26,6 +26,7 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | **Double jump** (once unlocked) | `Space` again in mid-air | `A` again in mid-air |
 | **Wall jump** (once unlocked) | cling a wall, then `Space` | cling a wall, then `A` |
 | **Dash** (once unlocked) | `Shift` / `L` (hold to **run**) | right bumper |
+| **Slide** (running/dashing → light hit) | press `S`/`↓` | press down |
 | **Pogo** (down-slash, once unlocked) | in the air, hold `↓` + `J` | in the air, hold down + `X` |
 | Interact / bench shop | `E` | `Y` (north) |
 | Character screen (view stats + abilities) | `C` | left bumper |
@@ -523,6 +524,13 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **Slide tackle.** Pressing **Down** while running or dashing launches a low,
+  momentum-carrying **slide** ([`player`](src/player.rs), `slide_*` in `MovementConfig`): it
+  rides at crouch height (slips under things) and bleeds off with friction, ending on its timer
+  or on leaving the ground. While sliding, the player's body is a **light melee hitbox** — each
+  enemy/boss it passes through takes a small hit (half a sword swing), once per slide
+  ([`combat`](src/combat.rs)). Steering and jumping are locked for the slide's brief duration;
+  needs the **Dash** ability (you must be running/dashing to start one).
 - **2026-06-29** — **Horizontal crush (done right).** A platform moving **sideways** into you
   now crushes again — but only when its leading face **drives you into a wall** with no room to
   go, and only while you're standing: **ducking** drops your head below a tile-high platform so
