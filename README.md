@@ -521,11 +521,15 @@ are deliberately simple scaffolds to build on.
   Descriptive only — bindings aren't configurable. The unlockable abilities (double jump,
   wall jump, dash, pogo) are **gated in Story** — each appears only once you've acquired that
   ability, so the screen never spoils what you haven't found. A Builder save lists them all.
+  The same icon font also drives the in-world **bench / chest prompts**: on a controller they
+  now show the **Triangle button glyph** (`[△] rest` / `[△] open`) instead of the word, and
+  fall back to `[E]` on keyboard.
 - **2026-06-29** — **Context-sensitive control hints.** A `LastInput` resource
   ([`input`](src/input.rs)) tracks the most recently used device, and on-screen prompts now
-  match it: the bench/chest "[E] …" prompts, the character/bench overlay hint, and the world-map
+  match it: the bench/chest prompts, the character/bench overlay hint, and the world-map
   hints switch between **keyboard keys** and **PlayStation labels** (Cross / Circle / Triangle /
-  L1 / R1 / Options) as you swap between keyboard and a controller.
+  L1 / R1 / Options) as you swap between keyboard and a controller. (The bench/chest prompts
+  later became actual icon glyphs — see the Controls entry above.)
 - **2026-06-29** — **Hold the dash button to run**, with its own animation. After the dash
   burst, keeping the dash button held + a direction settles into a sustained **sprint**
   (`sprint_speed`, between walk and dash speed) with a new **sprint cycle** (player sheet now

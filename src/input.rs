@@ -62,9 +62,15 @@ impl LastInput {
     pub fn move_dir(self) -> &'static str {
         if self.pad() { "D-Pad" } else { "arrows" }
     }
-    /// Interact — `E` or **Triangle**.
+    /// Interact prompt token: keyboard `E`, or the PlayStation **Triangle glyph**. Both
+    /// consumers (the bench / chest prompts) draw it in the icon font, so the gamepad case
+    /// is the glyph itself rather than the word — see [`crate::glyph`] / [`crate::menu::PromptGlyph`].
     pub fn interact(self) -> &'static str {
-        if self.pad() { "Triangle" } else { "E" }
+        if self.pad() {
+            crate::glyph::TRIANGLE
+        } else {
+            "E"
+        }
     }
     /// World-map toggle — `M` or **Options**.
     pub fn map(self) -> &'static str {

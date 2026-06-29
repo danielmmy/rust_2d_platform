@@ -249,28 +249,6 @@ fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
     items
 }
 
-/// Icon-font tokens. PromptFont keeps plain ASCII letters legible but remaps these code
-/// points to keyboard / PlayStation-gamepad glyphs (they look like tofu in any other font,
-/// so they must be rendered with [`PromptGlyph`]). Written as `\u{..}` escapes so the source
-/// stays pure ASCII and readable in any terminal; the comment names the glyph each yields.
-mod glyph {
-    // PlayStation face buttons (PromptFont keys them off these dashed arrows by direction).
-    pub const CROSS: &str = "\u{21E3}"; // down  -> Cross
-    pub const SQUARE: &str = "\u{21E0}"; // left  -> Square
-    pub const TRIANGLE: &str = "\u{21E1}"; // up    -> Triangle
-    // Shoulders, d-pad, stick, and the menu buttons.
-    pub const L1: &str = "\u{21B0}"; // left shoulder
-    pub const R1: &str = "\u{21B1}"; // right shoulder
-    pub const DPAD_UD: &str = "\u{21A3}"; // d-pad up/down
-    pub const STICK: &str = "\u{21CD}"; // left analog stick
-    pub const OPTIONS: &str = "\u{21E8}"; // Options (Start)
-    pub const SHARE: &str = "\u{21E6}"; // Share / Create (Select)
-    // Keyboard keys (single-glyph tokens).
-    pub const SPACE: &str = "\u{243A}"; // Space key
-    pub const SHIFT: &str = "\u{2429}"; // Shift key
-    pub const ESC: &str = "\u{242F}"; // Esc key
-}
-
 /// One row of the controls sheet: a plain-text action label plus its keyboard and
 /// controller tokens (the latter two render in the icon font).
 struct ControlRow {
@@ -288,7 +266,7 @@ impl ControlRow {
 /// The controls grouped into titled sections. Unlockable abilities are gated: a Story save
 /// shows each only once acquired (no spoilers); a Builder save lists them all.
 fn control_sections(builder: bool, save: &Save) -> Vec<(&'static str, Vec<ControlRow>)> {
-    use glyph::*;
+    use crate::glyph::*;
     let have = Abilities::from_csv(&save.abilities);
 
     // The combat/ability section grows with what the player has earned.
@@ -391,9 +369,10 @@ struct UiFonts {
 }
 
 /// Marks a [`Text2d`] whose text is icon-font glyphs; [`apply_prompt_font`] swaps the
-/// default font for [`UiFonts::prompt`] the moment the row spawns.
+/// default font for [`UiFonts::prompt`] the moment the row spawns. Used by the pause
+/// controls sheet and the in-world bench/chest prompts (see [`crate::world`]).
 #[derive(Component)]
-struct PromptGlyph;
+pub(crate) struct PromptGlyph;
 
 /// Decode the embedded icon font into an asset once at startup.
 fn load_ui_fonts(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {

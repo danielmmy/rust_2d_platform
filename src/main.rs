@@ -13,6 +13,7 @@ mod boss;
 mod camera;
 mod combat;
 mod editor;
+mod glyph;
 mod hazards;
 mod health;
 mod input;

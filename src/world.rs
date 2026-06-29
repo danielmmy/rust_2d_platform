@@ -25,6 +25,7 @@ use crate::combat::{Bloodstain, ENEMY_HALF, ENEMY_KINDS, Enemy, LostEnergy};
 use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
 use crate::input::{LastInput, PlayerIntent};
+use crate::menu::PromptGlyph;
 use crate::physics::{Solids, TILE};
 use crate::player::{Abilities, Ability, JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
@@ -726,6 +727,8 @@ fn spawn_chest_prompt(mut commands: Commands, existing: Query<(), With<ChestProm
     }
     commands.spawn((
         ChestPrompt,
+        // The interact token renders as an icon glyph (Triangle on a pad), so use the font.
+        PromptGlyph,
         Text2d::new("[E] open"),
         TextFont {
             font_size: FontSize::Px(16.0),
@@ -1697,6 +1700,8 @@ fn spawn_bench_prompt(mut commands: Commands, existing: Query<(), With<BenchProm
     }
     commands.spawn((
         BenchPrompt,
+        // The interact token renders as an icon glyph (Triangle on a pad), so use the font.
+        PromptGlyph,
         Text2d::new("[E] rest"),
         TextFont {
             font_size: FontSize::Px(16.0),
