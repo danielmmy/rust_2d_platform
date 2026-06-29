@@ -147,13 +147,13 @@ impl Plugin for AnimationPlugin {
 // --- player --------------------------------------------------------------
 
 const PLAYER_COLS: u32 = 6;
-const PLAYER_ROWS: u32 = 6;
+const PLAYER_ROWS: u32 = 7;
 /// Minimum horizontal speed (px/s) before the walk cycle plays.
 const WALK_SPEED_MIN: f32 = 12.0;
 
-// Frame rows in the 6×6 sheet: 0 = idle/blink, 1 = walk, 2 = jump, 3 = damage,
-// 4 = crouch (hold Down), 5 = look-up (hold Up). The sprite faces right; `player`
-// movement flips it to face left, Hollow-Knight style, so facing follows the walk.
+// Frame rows in the 6×7 sheet: 0 = idle/blink, 1 = walk, 2 = jump, 3 = damage,
+// 4 = crouch (hold Down), 5 = look-up (hold Up), 6 = sprint (running). The sprite faces
+// right; `player` movement flips it to face left, Hollow-Knight style, so facing follows.
 const PLAYER_IDLE: Clip = Clip {
     first: 0,
     count: 4,
@@ -191,6 +191,13 @@ const PLAYER_LOOKUP: Clip = Clip {
     first: 30,
     count: 1,
     fps: 1.0,
+    playback: Playback::Loop,
+};
+/// Sprint cycle (running on the ground) — the walk frames, leaning, played faster.
+const PLAYER_SPRINT: Clip = Clip {
+    first: 36,
+    count: 6,
+    fps: 15.0,
     playback: Playback::Loop,
 };
 
@@ -250,7 +257,11 @@ fn control_player(
         let last = anim.clip.count.saturating_sub(1);
         anim.frame = ((progress * anim.clip.count as f32) as usize).min(last);
     } else if velocity.0.x.abs() > WALK_SPEED_MIN {
-        anim.play(PLAYER_WALK);
+        anim.play(if jump.running() {
+            PLAYER_SPRINT
+        } else {
+            PLAYER_WALK
+        });
     } else if intent.down {
         anim.play(PLAYER_CROUCH);
     } else if intent.up {

@@ -60,12 +60,20 @@ pub struct JumpState {
     dash_dir: f32,
     /// An unused mid-air dash is available (refreshed on landing).
     air_dash: bool,
+    /// Sprinting (dash button held while moving). Decided on the ground, then carried
+    /// through jumps/falls so the run's momentum survives the air and resumes on landing.
+    running: bool,
 }
 
 impl JumpState {
     /// Whether the player is standing on the ground (read by animation).
     pub fn grounded(&self) -> bool {
         self.grounded
+    }
+
+    /// Whether the player is sprinting (read by animation for the run cycle).
+    pub fn running(&self) -> bool {
+        self.running
     }
 
     /// Begin a **pogo** bounce (a down-slash connected): behave like a fresh jump — so
@@ -207,6 +215,8 @@ pub struct MovementConfig {
     pub dash_speed: f32,
     pub dash_time: f32,
     pub dash_cd: f32,
+    /// Sustained run speed when the dash button stays held after a dash (> `run_speed`).
+    pub sprint_speed: f32,
 }
 
 impl Default for MovementConfig {
@@ -230,6 +240,7 @@ impl Default for MovementConfig {
             dash_speed: 560.0,
             dash_time: 0.16,
             dash_cd: 0.45,
+            sprint_speed: 420.0,
         }
     }
 }
@@ -314,6 +325,14 @@ pub(crate) fn movement(
         }
         let dashing = jump.dash > 0.0;
 
+        // Sprint state: decided while grounded (dash button held + moving), then left
+        // untouched in the air so a jump/fall carries the run's momentum and resumes it on
+        // landing. Only re-evaluated once back on the ground.
+        if jump.grounded {
+            jump.running =
+                abilities.dash && intent.dash_held && !stunned && intent.move_x.abs() > 0.1;
+        }
+
         if !stunned && !dashing {
             // --- wall cling (Hollow-Knight style): grab automatically on contact while
             // airborne; let go by pressing *away* from the wall (or off the ground). ---
@@ -335,7 +354,14 @@ pub(crate) fn movement(
 
             // --- horizontal (coasts during the wall-jump lockout) ---
             if !locked {
-                let target = intent.move_x * cfg.run_speed;
+                // Running (see above) sustains a faster sprint speed; the run state carries
+                // through the air, so a jump keeps its momentum and a landing keeps running.
+                let speed = if jump.running {
+                    cfg.sprint_speed
+                } else {
+                    cfg.run_speed
+                };
+                let target = intent.move_x * speed;
                 let accel = if jump.grounded {
                     cfg.accel_ground
                 } else {

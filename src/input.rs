@@ -24,6 +24,8 @@ pub struct PlayerIntent {
     pub attack_pressed: bool,
     /// Dash was pressed this frame (edge) — a quick horizontal burst (if unlocked).
     pub dash_pressed: bool,
+    /// Dash is currently held — keep holding after a dash to **run** (sustained sprint).
+    pub dash_held: bool,
 }
 
 pub struct InputPlugin;
@@ -58,6 +60,7 @@ fn gather(
     let mut interact = keys.just_pressed(KeyCode::KeyE);
     let mut attack = keys.just_pressed(KeyCode::KeyJ);
     let mut dash = keys.any_just_pressed([KeyCode::ShiftLeft, KeyCode::KeyL]);
+    let mut dash_held = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::KeyL]);
 
     for gamepad in &gamepads {
         let stick = gamepad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
@@ -92,6 +95,9 @@ fn gather(
         if gamepad.just_pressed(GamepadButton::RightTrigger) {
             dash = true;
         }
+        if gamepad.pressed(GamepadButton::RightTrigger) {
+            dash_held = true;
+        }
     }
 
     intent.move_x = move_x.clamp(-1.0, 1.0);
@@ -102,4 +108,5 @@ fn gather(
     intent.interact = interact;
     intent.attack_pressed = attack;
     intent.dash_pressed = dash;
+    intent.dash_held = dash_held;
 }
