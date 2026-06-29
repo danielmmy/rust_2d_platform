@@ -61,13 +61,10 @@ fn overlaps(center: Vec2, half: Vec2, b: &PlatformBox) -> bool {
 pub fn carry_delta(platforms: &Platforms, center: Vec2, half: Vec2) -> Option<Vec2> {
     for b in &platforms.0 {
         let prev = b.center - b.delta; // where the tile was last frame
-        // The player's *centre* must be over the platform's span (genuinely standing on it),
-        // not merely edge-overlapping — otherwise a player pressed against the side near the
-        // top corner would be "carried" onto it.
-        let over_span = (center.x - prev.x).abs() < b.half.x;
+        let over_x = (center.x - prev.x).abs() < half.x + b.half.x;
         let feet = center.y - half.y;
         let top = prev.y + b.half.y;
-        if over_span && (feet - top).abs() <= CARRY_EPS {
+        if over_x && (feet - top).abs() <= CARRY_EPS {
             return Some(b.delta);
         }
     }
@@ -86,15 +83,11 @@ pub fn resolve_platforms_x(platforms: &Platforms, center: &mut Vec2, half: Vec2,
             continue;
         }
         // A rider resting on (or within CARRY_EPS of) the platform's top isn't hitting its
-        // side. Skipping it stops a walking rider from being ejected sideways: carrying the
-        // rider can leave its feet a hair inside the box top, and this X pass runs before the
-        // Y pass that re-seats the feet, so the overlap would otherwise look like a wall hit.
-        // The rider's *centre* must also be over the span — a player pressed against the side
-        // near the top corner is a real side-hit and must be pushed out (else the Y pass would
-        // board them onto the platform).
-        let on_top = center.y - half.y >= b.center.y + b.half.y - CARRY_EPS;
-        let over_span = (center.x - b.center.x).abs() < b.half.x;
-        if on_top && over_span {
+        // side — skipping it keeps a walking rider (including one near the platform's edge)
+        // from being ejected sideways. Carrying can leave the feet a hair inside the box top,
+        // and this X pass runs before the Y pass that re-seats them, so the overlap would
+        // otherwise look like a wall hit.
+        if center.y - half.y >= b.center.y + b.half.y - CARRY_EPS {
             continue;
         }
         center.x = if dx > 0.0 {
@@ -250,16 +243,16 @@ pub fn squish_push_x(
 
 /// The side-on analogue of [`squish_push_x`]: a platform moving **sideways** (`delta.x != 0`)
 /// whose leading face has pressed *into* the player's body, while a static wall at the spot it
-/// would shove the player to leaves nowhere to go horizontally. If so, return the y to shove
-/// the player to — out the nearer clear vertical side of the squashing span (up preferred) —
-/// and that span's centre (a knockback source). Resolve before the normal side-push, which
-/// can't help once the escape route is walled.
+/// would shove the player to leaves nowhere to go horizontally. If so, return that span's centre
+/// as a knockback source — the caller **hurts** the player (the [`Hurt`](crate::health::Hurt)
+/// knockback nudges them out smoothly); it does **not** teleport them, so a crush against a wall
+/// can't fling the player up over the platform.
 pub fn squish_push_y(
     solids: &Solids,
     platforms: &Platforms,
     center: Vec2,
     half: Vec2,
-) -> Option<(f32, Vec2)> {
+) -> Option<Vec2> {
     let (left, right) = (center.x - half.x, center.x + half.x);
     let (mut bottom, mut top) = (f32::INFINITY, f32::NEG_INFINITY);
     let mut src_x = 0.0;
@@ -274,7 +267,7 @@ pub fn squish_push_y(
             continue; // resting against an edge / riding on top — no horizontal bite
         }
         // Require a real side-on bite over a good chunk of the body — not a head/foot-corner
-        // graze (e.g. brushing a platform raised a tile overhead), which must not shove you up.
+        // graze (e.g. brushing a platform raised a tile overhead), which must not count.
         let y_overlap = (center.y + half.y).min(b.center.y + b.half.y)
             - (center.y - half.y).max(b.center.y - b.half.y);
         if y_overlap < half.y {
@@ -290,18 +283,7 @@ pub fn squish_push_y(
         src_x = b.center.x;
         found = true;
     }
-    if !found {
-        return None;
-    }
-    let (up_y, down_y) = (top + half.y, bottom - half.y);
-    let up_ok = !aabb_in_solid(solids, center.x, up_y, half);
-    let down_ok = !aabb_in_solid(solids, center.x, down_y, half);
-    // Up first (climb out over the platform); if it's walled and down isn't, drop out instead.
-    let new_y = match (up_ok, down_ok) {
-        (false, true) => down_y,
-        _ => up_y,
-    };
-    Some((new_y, Vec2::new(src_x, (bottom + top) * 0.5)))
+    found.then(|| Vec2::new(src_x, (bottom + top) * 0.5))
 }
 
 /// Move an AABB (centre + half-extents) along X by `dx`, stopping at solids.
@@ -535,25 +517,27 @@ mod tests {
     }
 
     #[test]
-    fn side_hit_near_the_top_is_still_ejected() {
-        // Platform [32,64]×[0,32]; player to its left, feet just below the top (so it's a real
-        // overlap) but centre beyond the left edge — pressed against the side, not standing on
-        // it. Must be pushed out, not skipped as a rider (which would let the Y pass board it).
+    fn rider_near_the_edge_is_not_ejected() {
+        // A wide moving platform [0,96]×[0,32]; the player rides hanging past its right edge
+        // (centre beyond the span, feet on top), walking right. It must not be side-pushed —
+        // only fall off naturally — so the rider-skip is feet-near-top alone, not "centre over
+        // the span" (which used to eject edge riders).
         let platforms = Platforms(vec![PlatformBox {
             center: Vec2::new(48.0, 16.0),
-            half: Vec2::splat(16.0),
-            delta: Vec2::new(-2.0, 0.0),
+            half: Vec2::new(48.0, 16.0),
+            delta: Vec2::new(2.0, 0.0),
         }]);
-        let mut center = Vec2::new(28.0, 49.0); // feet at 30, just under the top (32)
+        let mut center = Vec2::new(100.0, 49.0); // hanging past the right edge, feet ~ on top
         let hit = resolve_platforms_x(&platforms, &mut center, Vec2::new(11.0, 19.0), 5.0);
-        assert!(hit, "a side-hit near the top is pushed out, not boarded");
-        assert!((center.x - (48.0 - 16.0 - 11.0)).abs() < 0.1);
+        assert!(!hit, "an edge rider must not be ejected sideways");
+        assert_eq!(center.x, 100.0);
     }
 
     #[test]
-    fn horizontal_squish_against_a_wall_shoves_up() {
+    fn horizontal_squish_against_a_wall_is_detected() {
         // Platform [0,32]×[8,40] moving right, its right face bitten into the player's body,
-        // with a wall at the spot a side-push would shove them to → squish: shove up & out.
+        // with a wall at the spot a side-push would shove them to → squish (the caller hurts
+        // the player; no teleport).
         let platforms = Platforms(vec![PlatformBox {
             center: Vec2::new(16.0, 24.0),
             half: Vec2::splat(16.0),
@@ -562,8 +546,7 @@ mod tests {
         let half = Vec2::new(11.0, 19.0);
         let center = Vec2::new(30.0, 24.0);
         let walls = solids(&[(1, 0)]);
-        let (push_y, _src) = squish_push_y(&walls, &platforms, center, half).expect("squish");
-        assert!(push_y > center.y, "shoved up out of the squashing platform");
+        assert!(squish_push_y(&walls, &platforms, center, half).is_some());
 
         // With nowhere walled off, it's a normal side-push — not a squish.
         let open = solids(&[]);

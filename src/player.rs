@@ -520,11 +520,9 @@ pub(crate) fn movement(
 
         let dx = carry.x + velocity.0.x * dt;
         let mut blocked_x = physics::collide_x(&solids, &mut center, half, dx);
-        // Horizontal squish: a sideways-moving platform pressing the player into a wall. Shove
-        // them out vertically and hurt them (i-frames coalesce repeats) — done before the normal
-        // side-push, which can't help once the escape route is walled.
-        if let Some((push_y, src)) = physics::squish_push_y(&solids, &platforms, center, half) {
-            center.y = push_y;
+        // Horizontal squish: a sideways-moving platform pressing the player into a wall just
+        // **hurts** them (i-frames coalesce repeats); the knockback nudges them out — no teleport.
+        if let Some(src) = physics::squish_push_y(&solids, &platforms, center, half) {
             hurt.write(Hurt::From(src));
         }
         blocked_x |= physics::resolve_platforms_x(&platforms, &mut center, half, dx);

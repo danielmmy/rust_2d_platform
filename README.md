@@ -295,8 +295,8 @@ forever), **`pingpong`** (bounce back and forth), or **`once`** (stop at the las
 **Solid** cells become ridable — stand on one and it **carries you** (including up/down
 lifts); non-solid cells keep their own behaviour (a moving spike still hurts). A platform
 pressing into you **squishes**: one coming **down** first **forces you to crouch** (you duck
-under it) and only **hurts** you if it keeps descending into the crouched box; one shoving you
-**sideways** into a wall **hurts** you and pops you out the nearest clear way (up/down). The
+under it) and only **hurts** you if it keeps descending into the crouched box; one pinning you
+**sideways** against a wall **hurts** you (the knockback nudges you free — no teleport). The
 starter
 rooms show one of each mode over a 3-tile block: `r0_0` a `loop` patrol, `r1_0` a
 `pingpong` slider, `r2_0` a `once` lift. (Collision is a static cell grid, so a mover's
@@ -522,6 +522,12 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **More squish/ride fixes.** Reverted an over-eager "centre must be over the
+  span" rider check that was ejecting riders near a platform's **edge** to the edge; the
+  rider-skip is feet-near-top again, so edge riders just walk off naturally. The **horizontal
+  squish** is now **damage-only** — a sideways platform pinning you against a wall hurts you and
+  the knockback nudges you free, instead of teleporting you up over the platform.
+  ([`physics`](src/physics.rs), [`player`](src/player.rs))
 - **2026-06-29** — **Squish/crouch fixes.** The forced crouch now triggers **only for a
   platform descending onto you from overhead** (`physics::ducking_under`) — riding a platform
   **up**, or pressing against one's **side**, no longer spuriously auto-crouches. The horizontal
