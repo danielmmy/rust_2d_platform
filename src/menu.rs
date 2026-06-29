@@ -14,8 +14,10 @@
 //! [`crate::save::Settings`] and is applied to the primary window by `apply_window_mode`.
 //!
 //! Menus are drawn the lightweight way the world map is — a backdrop sprite plus
-//! `Text2d` rows around the camera — and navigated with the arrows / D-pad,
-//! confirmed with jump / `Enter` / `South`.
+//! `Text2d` rows around the camera — and navigated with the arrows / D-pad, confirmed
+//! with jump / `Enter` / `South`, and stepped **back / cancelled** with `Esc` / **Circle**
+//! (in the pause menu, **Select** also closes it outright). **Quit** asks for confirmation
+//! first so a misclick can't drop you out of the game.
 
 use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
@@ -60,6 +62,8 @@ enum MenuScreen {
     NameEntry(usize, GameMode),
     /// Settings (window mode).
     Options,
+    /// Confirm quitting the whole game (guards against a misclick).
+    ConfirmQuit,
 }
 
 /// Which pause sub-screen is showing.
@@ -75,6 +79,8 @@ enum PauseScreen {
     Abilities,
     /// A read-only reference of the keyboard + controller layouts.
     Controls,
+    /// Confirm quitting the whole game (guards against a misclick).
+    ConfirmQuit,
 }
 
 /// The name being typed for a new game (in the [`MenuScreen::NameEntry`] screen).
@@ -137,7 +143,10 @@ enum MenuAction {
     StepMusicVolume,
     /// Leave a paused game back to the title screen.
     MainMenu,
+    /// Open the quit-confirmation screen (guards against a misclick).
     Quit,
+    /// Actually exit the app — only chosen from the quit-confirmation screen.
+    QuitConfirmed,
 }
 
 /// A 5-segment ASCII level bar + percent for a 0..1 volume.
@@ -209,6 +218,10 @@ fn main_menu_items(screen: MenuScreen, settings: &Settings) -> Vec<(String, Menu
                 "Builder  (start a copy you can edit)".to_string(),
                 MenuAction::PickMode(GameMode::Builder),
             ),
+            ("Back".to_string(), MenuAction::Back),
+        ],
+        MenuScreen::ConfirmQuit => vec![
+            ("Quit game".to_string(), MenuAction::QuitConfirmed),
             ("Back".to_string(), MenuAction::Back),
         ],
         // Drawn specially (it needs the live name buffer) — see `draw_name_entry`.
@@ -352,11 +365,19 @@ fn menu_title(screen: MenuScreen) -> &'static str {
         MenuScreen::ModeSelect(_) => "CHOOSE MODE",
         MenuScreen::NameEntry(..) => "NAME YOUR SAVE",
         MenuScreen::Options => "OPTIONS",
+        MenuScreen::ConfirmQuit => "QUIT GAME?",
     }
 }
 
 fn labels(items: &[(String, MenuAction)]) -> Vec<String> {
     items.iter().map(|(label, _)| label.clone()).collect()
+}
+
+/// The universal "back / cancel": `Esc` on the keyboard or **Circle** (East) on a gamepad.
+/// Used by both menu systems to step back one screen without hunting for the "Back" row.
+fn cancel_just_pressed(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>) -> bool {
+    keys.just_pressed(KeyCode::Escape)
+        || gamepads.iter().any(|g| g.just_pressed(GamepadButton::East))
 }
 
 /// The icon font ([PromptFont], SIL OFL 1.1) used for control-glyph rows: its ASCII
@@ -418,8 +439,9 @@ impl Plugin for MenuPlugin {
             )
             .add_systems(
                 Update,
-                toggle_pause.run_if(
+                open_pause.run_if(
                     in_state(GameState::Playing)
+                        .and_then(in_state(Paused::Running))
                         .and_then(in_state(MapView::Closed))
                         .and_then(in_state(crate::stats::CharMenu::Closed)),
                 ),
@@ -494,10 +516,12 @@ fn despawn_menu(mut commands: Commands, menu: Query<Entity, With<MenuEntity>>) {
     }
 }
 
-fn toggle_pause(
+/// Open the pause menu on `Esc` / **Select**. Runs only while **Running** (closing and the
+/// back/cancel shortcut are owned by [`pause_menu_update`]), so it can't also resume on the
+/// very press that's meant to step back inside the menu.
+fn open_pause(
     keys: Res<ButtonInput<KeyCode>>,
     gamepads: Query<&Gamepad>,
-    state: Res<State<Paused>>,
     mut next: ResMut<NextState<Paused>>,
 ) {
     let pressed = keys.just_pressed(KeyCode::Escape)
@@ -505,10 +529,7 @@ fn toggle_pause(
             .iter()
             .any(|g| g.just_pressed(GamepadButton::Select));
     if pressed {
-        next.set(match state.get() {
-            Paused::Running => Paused::Paused,
-            Paused::Paused => Paused::Running,
-        });
+        next.set(Paused::Paused);
     }
 }
 
@@ -660,6 +681,20 @@ fn main_menu_update(
         return;
     }
 
+    // Esc / Circle steps back one screen (like choosing "Back"); a no-op at the top.
+    if cancel_just_pressed(&keys, &gamepads) {
+        let parent = match *screen {
+            MenuScreen::ConfirmNew(_) | MenuScreen::ModeSelect(_) => MenuScreen::NewSlots,
+            _ => MenuScreen::Main,
+        };
+        if parent != *screen {
+            *screen = parent;
+            cursor.0 = 0;
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
+        }
+        return;
+    }
+
     let items = main_menu_items(*screen, &settings);
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
@@ -760,6 +795,12 @@ fn main_menu_update(
             redraw_main(&mut commands, &menu, *screen, &settings, &camera);
         }
         MenuAction::Quit => {
+            // Confirm first — guard against a misclick on the title screen.
+            *screen = MenuScreen::ConfirmQuit;
+            cursor.0 = 1; // default to the safe "Back" option
+            redraw_main(&mut commands, &menu, *screen, &settings, &camera);
+        }
+        MenuAction::QuitConfirmed => {
             exit.write(AppExit::Success);
         }
         // Only produced by the pause menu, handled in `pause_menu_update`.
@@ -793,6 +834,35 @@ fn pause_menu_update(
     mut start_in_editor: ResMut<crate::editor::StartInEditor>,
 ) {
     let builder = save.mode == GameMode::Builder;
+
+    // Esc / Circle steps back one screen (resume from the root); Select closes the menu outright.
+    let cancel = cancel_just_pressed(&keys, &gamepads);
+    let close = gamepads
+        .iter()
+        .any(|g| g.just_pressed(GamepadButton::Select));
+    if close || (cancel && *screen == PauseScreen::Root) {
+        next.set(Paused::Running);
+        return;
+    }
+    if cancel {
+        *screen = PauseScreen::Root;
+        cursor.0 = 0;
+        redraw_pause(
+            &mut commands,
+            &menu,
+            &camera,
+            *screen,
+            builder,
+            &info.stats,
+            &info.energy,
+            &info.lost,
+            &settings,
+            &abilities,
+            &save,
+        );
+        return;
+    }
+
     // The sub-screens have their own rows; the root has the full list.
     let items = match *screen {
         PauseScreen::Root => pause_menu_items(builder),
@@ -800,6 +870,10 @@ fn pause_menu_update(
         PauseScreen::Options => options_items(&settings),
         PauseScreen::Abilities => ability_items(builder, &abilities, &save),
         PauseScreen::Controls => vec![("Back".to_string(), MenuAction::Back)],
+        PauseScreen::ConfirmQuit => vec![
+            ("Quit game".to_string(), MenuAction::QuitConfirmed),
+            ("Back".to_string(), MenuAction::Back),
+        ],
     };
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
@@ -962,6 +1036,24 @@ fn pause_menu_update(
             game_state.set(GameState::MainMenu);
         }
         Some(MenuAction::Quit) => {
+            // Confirm first — guard against a misclick.
+            *screen = PauseScreen::ConfirmQuit;
+            cursor.0 = 1; // default to the safe "Back" option
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                builder,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
+                &abilities,
+                &save,
+            );
+        }
+        Some(MenuAction::QuitConfirmed) => {
             exit.write(AppExit::Success);
         }
         _ => {}
@@ -1014,6 +1106,12 @@ fn redraw_pause(
             );
         }
         PauseScreen::Controls => draw_controls_sheet(commands, center, builder, save),
+        PauseScreen::ConfirmQuit => draw_menu(
+            commands,
+            center,
+            "QUIT GAME?",
+            &["Quit game".to_string(), "Back".to_string()],
+        ),
     }
 }
 

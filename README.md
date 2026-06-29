@@ -33,8 +33,9 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 
 Jump is its **own button** (`Space` / south) — `↑` no longer jumps, so holding **Up**
 **looks up** and **Down** **crouches** (each with its own pose; hold a moment and the
-**camera pans** that way too, clamped to the room). Menus still confirm with
-`Enter` / `Space` / `Z`.
+**camera pans** that way too, clamped to the room). Menus confirm with
+`Enter` / `Space` / `Z` and step **back / cancel** with `Esc` / **Circle** (the pause
+menu also closes on **Select**); **Quit** always asks to confirm first.
 
 **Abilities are earned.** A new game starts with only the **single jump** and **slash**;
 **double jump, wall jump, dash, and pogo** must each be unlocked — by **beating a boss** or
@@ -511,6 +512,13 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **Menu back/cancel shortcut + quit confirmation** ([`menu`](src/menu.rs)).
+  `Esc` / **Circle** now steps back one screen anywhere in the title or pause menus (resuming
+  the game from the pause root), so you no longer have to scroll down to a "Back" row; the
+  gamepad **Select** button still closes the pause menu outright. Opening the pause menu is
+  now open-only (it can't resume on the same press that's meant to navigate). **Quit** (from
+  either menu) now routes through a **"QUIT GAME?"** confirmation defaulting to *Back*, so a
+  stray click can't exit the game.
 - **2026-06-29** — Added a **Controls** reference to the pause menu ([`menu`](src/menu.rs)):
   a read-only screen with the action labels grouped into **Movement / Actions / Menu**
   sections and two glyph columns — **keyboard** and **controller**. The key/button tokens
