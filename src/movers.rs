@@ -133,20 +133,56 @@ fn move_platforms(
 
         p.delta = p.anchor - prev;
         let (anchor, delta) = (p.anchor, p.delta);
+        let mut solids = Vec::new();
         for part in &p.parts {
             if let Ok(mut tf) = transforms.get_mut(part.entity) {
                 tf.translation.x = anchor.x + part.offset.x;
                 tf.translation.y = anchor.y + part.offset.y;
             }
             if part.solid {
-                boxes.0.push(PlatformBox {
-                    center: anchor + part.offset,
-                    half: Vec2::splat(TILE / 2.0),
-                    delta,
-                });
+                solids.push(anchor + part.offset);
             }
         }
+        boxes.0.extend(merge_row_runs(&solids, delta));
     }
+}
+
+/// Republish a platform's solid tiles as collision boxes, merging horizontally-contiguous
+/// tiles in the same row into a single spanning box. A multi-tile platform then reads as one
+/// wide surface, so the player's "am I riding this or hitting its side?" test (which compares
+/// the player's centre against the box span) is robust — a rider straddling a tile seam isn't
+/// mistaken for a side-hit. `delta` is shared by all tiles of the platform.
+fn merge_row_runs(centers: &[Vec2], delta: Vec2) -> impl Iterator<Item = PlatformBox> {
+    use std::collections::BTreeMap;
+    // Group tile x-centres by row (quantised y), each list kept sorted.
+    let mut rows: BTreeMap<i32, (f32, Vec<f32>)> = BTreeMap::new();
+    for c in centers {
+        let entry = rows
+            .entry((c.y / TILE).round() as i32)
+            .or_insert((c.y, Vec::new()));
+        entry.1.push(c.x);
+    }
+    let mut out = Vec::new();
+    for (_, (y, mut xs)) in rows {
+        xs.sort_by(|a, b| a.total_cmp(b));
+        let mut i = 0;
+        while i < xs.len() {
+            let start = xs[i];
+            let mut end = start;
+            // Extend the run across tiles whose centres are one tile apart (contiguous).
+            while i + 1 < xs.len() && xs[i + 1] - end <= TILE + 0.5 {
+                i += 1;
+                end = xs[i];
+            }
+            out.push(PlatformBox {
+                center: Vec2::new((start + end) / 2.0, y),
+                half: Vec2::new((end - start) / 2.0 + TILE / 2.0, TILE / 2.0),
+                delta,
+            });
+            i += 1;
+        }
+    }
+    out.into_iter()
 }
 
 /// Pick the next stop after arriving, per the platform's [`MoveMode`].

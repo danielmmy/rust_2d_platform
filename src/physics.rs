@@ -61,10 +61,13 @@ fn overlaps(center: Vec2, half: Vec2, b: &PlatformBox) -> bool {
 pub fn carry_delta(platforms: &Platforms, center: Vec2, half: Vec2) -> Option<Vec2> {
     for b in &platforms.0 {
         let prev = b.center - b.delta; // where the tile was last frame
-        let over_x = (center.x - prev.x).abs() < half.x + b.half.x;
+        // The player's *centre* must be over the platform's span (genuinely standing on it),
+        // not merely edge-overlapping — otherwise a player pressed against the side near the
+        // top corner would be "carried" onto it.
+        let over_span = (center.x - prev.x).abs() < b.half.x;
         let feet = center.y - half.y;
         let top = prev.y + b.half.y;
-        if over_x && (feet - top).abs() <= CARRY_EPS {
+        if over_span && (feet - top).abs() <= CARRY_EPS {
             return Some(b.delta);
         }
     }
@@ -86,7 +89,12 @@ pub fn resolve_platforms_x(platforms: &Platforms, center: &mut Vec2, half: Vec2,
         // side. Skipping it stops a walking rider from being ejected sideways: carrying the
         // rider can leave its feet a hair inside the box top, and this X pass runs before the
         // Y pass that re-seats the feet, so the overlap would otherwise look like a wall hit.
-        if center.y - half.y >= b.center.y + b.half.y - CARRY_EPS {
+        // The rider's *centre* must also be over the span — a player pressed against the side
+        // near the top corner is a real side-hit and must be pushed out (else the Y pass would
+        // board them onto the platform).
+        let on_top = center.y - half.y >= b.center.y + b.half.y - CARRY_EPS;
+        let over_span = (center.x - b.center.x).abs() < b.half.x;
+        if on_top && over_span {
             continue;
         }
         center.x = if dx > 0.0 {
@@ -220,6 +228,55 @@ pub fn squish_push_x(
         (false, _, _) => out_right,
     };
     Some((new_x, Vec2::new(group_center, center.y)))
+}
+
+/// The side-on analogue of [`squish_push_x`]: a platform moving **sideways** (`delta.x != 0`)
+/// whose leading face has pressed *into* the player's body, while a static wall at the spot it
+/// would shove the player to leaves nowhere to go horizontally. If so, return the y to shove
+/// the player to — out the nearer clear vertical side of the squashing span (up preferred) —
+/// and that span's centre (a knockback source). Resolve before the normal side-push, which
+/// can't help once the escape route is walled.
+pub fn squish_push_y(
+    solids: &Solids,
+    platforms: &Platforms,
+    center: Vec2,
+    half: Vec2,
+) -> Option<(f32, Vec2)> {
+    let (left, right) = (center.x - half.x, center.x + half.x);
+    let (mut bottom, mut top) = (f32::INFINITY, f32::NEG_INFINITY);
+    let mut src_x = 0.0;
+    let mut found = false;
+    for b in &platforms.0 {
+        if b.delta.x == 0.0 || !overlaps(center, half, b) {
+            continue;
+        }
+        let push = b.delta.x.signum(); // direction the platform is shoving the player
+        let lead = b.center.x + push * b.half.x; // the platform face leading its motion
+        if lead <= left || lead >= right {
+            continue; // resting against an edge / riding on top — no horizontal bite
+        }
+        // Only a squish if where the side-push *would* put the player is walled off.
+        let pushed_to = b.center.x + push * (b.half.x + half.x);
+        if !aabb_in_solid(solids, pushed_to, center.y, half) {
+            continue; // there's room to be pushed — a normal side-push, not a squish
+        }
+        bottom = bottom.min(b.center.y - b.half.y);
+        top = top.max(b.center.y + b.half.y);
+        src_x = b.center.x;
+        found = true;
+    }
+    if !found {
+        return None;
+    }
+    let (up_y, down_y) = (top + half.y, bottom - half.y);
+    let up_ok = !aabb_in_solid(solids, center.x, up_y, half);
+    let down_ok = !aabb_in_solid(solids, center.x, down_y, half);
+    // Up first (climb out over the platform); if it's walled and down isn't, drop out instead.
+    let new_y = match (up_ok, down_ok) {
+        (false, true) => down_y,
+        _ => up_y,
+    };
+    Some((new_y, Vec2::new(src_x, (bottom + top) * 0.5)))
 }
 
 /// Move an AABB (centre + half-extents) along X by `dx`, stopping at solids.
@@ -450,5 +507,41 @@ mod tests {
             (center.x - (48.0 - 16.0 - 11.0)).abs() < 0.1,
             "stop at the platform's left face"
         );
+    }
+
+    #[test]
+    fn side_hit_near_the_top_is_still_ejected() {
+        // Platform [32,64]×[0,32]; player to its left, feet just below the top (so it's a real
+        // overlap) but centre beyond the left edge — pressed against the side, not standing on
+        // it. Must be pushed out, not skipped as a rider (which would let the Y pass board it).
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(48.0, 16.0),
+            half: Vec2::splat(16.0),
+            delta: Vec2::new(-2.0, 0.0),
+        }]);
+        let mut center = Vec2::new(28.0, 49.0); // feet at 30, just under the top (32)
+        let hit = resolve_platforms_x(&platforms, &mut center, Vec2::new(11.0, 19.0), 5.0);
+        assert!(hit, "a side-hit near the top is pushed out, not boarded");
+        assert!((center.x - (48.0 - 16.0 - 11.0)).abs() < 0.1);
+    }
+
+    #[test]
+    fn horizontal_squish_against_a_wall_shoves_up() {
+        // Platform [0,32]×[8,40] moving right, its right face bitten into the player's body,
+        // with a wall at the spot a side-push would shove them to → squish: shove up & out.
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(16.0, 24.0),
+            half: Vec2::splat(16.0),
+            delta: Vec2::new(3.0, 0.0),
+        }]);
+        let half = Vec2::new(11.0, 19.0);
+        let center = Vec2::new(30.0, 24.0);
+        let walls = solids(&[(1, 0)]);
+        let (push_y, _src) = squish_push_y(&walls, &platforms, center, half).expect("squish");
+        assert!(push_y > center.y, "shoved up out of the squashing platform");
+
+        // With nowhere walled off, it's a normal side-push — not a squish.
+        let open = solids(&[]);
+        assert!(squish_push_y(&open, &platforms, center, half).is_none());
     }
 }

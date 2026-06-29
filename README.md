@@ -293,7 +293,11 @@ at its `tiles` home, glides to each `path` cell at `speed` **px/s** (uniform mot
 pauses `rest` **ms** at each, then continues by `mode`: **`loop`** (cycle home→stops→home
 forever), **`pingpong`** (bounce back and forth), or **`once`** (stop at the last cell).
 **Solid** cells become ridable — stand on one and it **carries you** (including up/down
-lifts); non-solid cells keep their own behaviour (a moving spike still hurts). The starter
+lifts); non-solid cells keep their own behaviour (a moving spike still hurts). A platform
+pressing into you **squishes**: one coming **down** first **forces you to crouch** (you duck
+under it) and only **hurts** you if it keeps descending into the crouched box; one shoving you
+**sideways** into a wall **hurts** you and pops you out the nearest clear way (up/down). The
+starter
 rooms show one of each mode over a 3-tile block: `r0_0` a `loop` patrol, `r1_0` a
 `pingpong` slider, `r2_0` a `once` lift. (Collision is a static cell grid, so a mover's
 solid tiles are lifted out of it and resolved as dynamic AABBs — see
@@ -518,6 +522,15 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **Graduated squish + horizontal squish + side-ride fix**
+  ([`player`](src/player.rs), [`physics`](src/physics.rs), [`movers`](src/movers.rs)). A
+  platform coming **down** now **forces a crouch** first (you duck under it) and only **hurts**
+  you once it descends into even the crouched box — instead of immediately damaging. Added a
+  **horizontal squish**: a sideways platform pressing you into a wall hurts you and pops you
+  out vertically (mirrors the vertical one). Fixed a bug where pressing into the **side** of a
+  moving platform could teleport you onto its top — the rider check now requires your centre to
+  be over the platform's span, and each mover's contiguous tiles are merged into one span so a
+  rider straddling a seam isn't mistaken for a side-hit.
 - **2026-06-29** — **Crouch hitbox + crouch-walk** ([`player`](src/player.rs),
   [`physics`](src/physics.rs), [`anim`](src/anim.rs)). Holding **Down** on the ground now
   **shrinks the collision box** (`CROUCH_HALF`, ~⅔ height) — it shrinks from the top with the

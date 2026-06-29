@@ -14,8 +14,9 @@
 //!   between facing walls.
 //! * **Crouch + crouch-walk** — hold **Down** on the ground to shrink the hitbox (it shrinks
 //!   from the top, feet planted) so you fit under a one-tile gap or a passing platform; add a
-//!   direction to crouch-walk at [`MovementConfig::crouch_speed`]. You stay crouched under a
-//!   low ceiling until there's room to stand.
+//!   direction to crouch-walk at [`MovementConfig::crouch_speed`]. You're also **forced** to
+//!   crouch whenever standing is blocked — a descending platform first ducks you under it, and
+//!   only crushes ([`Hurt`]) you if it keeps coming and bites even the crouched box.
 
 use bevy::prelude::*;
 
@@ -346,15 +347,14 @@ pub(crate) fn movement(
         let dashing = jump.dash > 0.0;
 
         // --- crouch: hold Down on the ground to shrink the hitbox (so the player fits under a
-        // one-tile gap or a passing platform) and slow to a crouch-walk. Once crouched, stay
-        // crouched even after releasing Down while a ceiling would block standing up, so you
-        // can't pop through a low platform. The box shrinks from the top, feet planted. ---
+        // one-tile gap or a passing platform) and slow to a crouch-walk. The player is **also
+        // forced** to crouch whenever a low ceiling or a descending platform blocks standing up
+        // — so a platform pressing down first ducks them under it; only if it keeps coming and
+        // bites even the crouched box does it squish (see the squish below). The box shrinks
+        // from the top with the feet planted. ---
         let body = transform.translation.truncate();
         let can_stand = !physics::blocked(&solids, &platforms, body, PLAYER_HALF);
-        let crouching = jump.grounded
-            && !dashing
-            && !stunned
-            && (intent.down || (jump.crouching && !can_stand));
+        let crouching = jump.grounded && !dashing && !stunned && (intent.down || !can_stand);
         jump.crouching = crouching;
         let half = if crouching { CROUCH_HALF } else { PLAYER_HALF };
         let crouch_drop = PLAYER_HALF.y - half.y;
@@ -513,8 +513,15 @@ pub(crate) fn movement(
         center.y += carry.y;
 
         let dx = carry.x + velocity.0.x * dt;
-        let blocked_x = physics::collide_x(&solids, &mut center, half, dx)
-            | physics::resolve_platforms_x(&platforms, &mut center, half, dx);
+        let mut blocked_x = physics::collide_x(&solids, &mut center, half, dx);
+        // Horizontal squish: a sideways-moving platform pressing the player into a wall. Shove
+        // them out vertically and hurt them (i-frames coalesce repeats) — done before the normal
+        // side-push, which can't help once the escape route is walled.
+        if let Some((push_y, src)) = physics::squish_push_y(&solids, &platforms, center, half) {
+            center.y = push_y;
+            hurt.write(Hurt::From(src));
+        }
+        blocked_x |= physics::resolve_platforms_x(&platforms, &mut center, half, dx);
         if blocked_x {
             velocity.0.x = 0.0;
         }
