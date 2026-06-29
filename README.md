@@ -295,9 +295,10 @@ forever), **`pingpong`** (bounce back and forth), or **`once`** (stop at the las
 **Solid** cells become ridable — stand on one and it **carries you** (including up/down
 lifts); non-solid cells keep their own behaviour (a moving spike still hurts). A platform
 coming **down** onto you first **forces you to crouch** (you duck under it) and only **hurts**
-you (a true crush) if it keeps descending into the crouched box with no room left. Platforms
-moving **sideways** or **up**, or ones you press against from the side, just block you — they
-never crush. The starter
+you (a true crush) if it keeps descending into the crouched box with no room left. One moving
+**sideways** into you crushes only if it **drives you into a wall** with no room to duck — duck
+and you slip under it; otherwise it just pushes/blocks you. Riding a platform **up**, or
+pressing against a still one, never crushes. The starter
 rooms show one of each mode over a 3-tile block: `r0_0` a `loop` patrol, `r1_0` a
 `pingpong` slider, `r2_0` a `once` lift. (Collision is a static cell grid, so a mover's
 solid tiles are lifted out of it and resolved as dynamic AABBs — see
@@ -522,6 +523,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **Horizontal crush (done right).** A platform moving **sideways** into you
+  now crushes again — but only when its leading face **drives you into a wall** with no room to
+  go, and only while you're standing: **ducking** drops your head below a tile-high platform so
+  it no longer touches you. Pressing against a still platform, or being below/beside one that
+  isn't pinning you, never hurts. ([`physics`](src/physics.rs), [`player`](src/player.rs))
 - **2026-06-29** — **False-crush fixes.** A crush now only hurts when a platform is **actively
   descending onto you from overhead** (and you're under its span) with no room below — so
   jumping up into a *laterally*-moving platform, or pressing against a platform's side, just

@@ -521,8 +521,12 @@ pub(crate) fn movement(
         center.y += carry.y;
 
         let dx = carry.x + velocity.0.x * dt;
-        let blocked_x = physics::collide_x(&solids, &mut center, half, dx)
-            | physics::resolve_platforms_x(&platforms, &mut center, half, dx);
+        // Platforms on X: push side hits out; a moving platform driving you into a wall (with no
+        // room to duck) is a **horizontal crush** — hurt, not clipped into the wall.
+        let mut blocked_x = physics::collide_x(&solids, &mut center, half, dx);
+        let (px_blocked, x_crush) =
+            physics::resolve_platforms_x(&solids, &platforms, &mut center, half);
+        blocked_x |= px_blocked;
         if blocked_x {
             velocity.0.x = 0.0;
         }
@@ -533,11 +537,12 @@ pub(crate) fn movement(
         // Platforms on Y: land on tops, bonk heads, and report a **vertical crush** (a platform
         // pressing you down with no room below) as a squish — hurt, not teleported. Crouching
         // shrinks `half`, so a platform that clears the lowered head doesn't register at all.
-        let (pb, pl, squish) = physics::resolve_platforms_y(&solids, &platforms, &mut center, half);
+        let (pb, pl, y_crush) =
+            physics::resolve_platforms_y(&solids, &platforms, &mut center, half);
         if sb || pb {
             velocity.0.y = 0.0;
         }
-        if let Some(src) = squish {
+        if let Some(src) = x_crush.or(y_crush) {
             hurt.write(Hurt::From(src));
         }
         jump.grounded = sl || pl;
