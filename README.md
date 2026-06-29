@@ -21,6 +21,7 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | Move | `A`/`D` or `←`/`→` | left stick / D-pad |
 | Jump | `Space` (dedicated button) | `A` (south) |
 | Look up / Crouch | `W`/`↑` · `S`/`↓` | D-pad up · down |
+| Crouch-walk (reduced hitbox) | `S`/`↓` + `A`/`D` | D-pad down + a direction |
 | Attack (sword) | `J` | `X` (west) |
 | **Double jump** (once unlocked) | `Space` again in mid-air | `A` again in mid-air |
 | **Wall jump** (once unlocked) | cling a wall, then `Space` | cling a wall, then `A` |
@@ -33,7 +34,10 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 
 Jump is its **own button** (`Space` / south) — `↑` no longer jumps, so holding **Up**
 **looks up** and **Down** **crouches** (each with its own pose; hold a moment and the
-**camera pans** that way too, clamped to the room). Menus confirm with
+**camera pans** that way too, clamped to the room). **Crouching shrinks the hitbox** (it
+shrinks from the top, feet planted) so you fit under a one-tile gap or a passing platform;
+add a direction to **crouch-walk** (slower than a walk, with its own cycle). You stay
+crouched under a low ceiling until there's headroom to stand. Menus confirm with
 `Enter` / `Space` / `Z` and step **back / cancel** with `Esc` / **Circle** (the pause
 menu also closes on **Select**); **Quit** always asks to confirm first.
 
@@ -514,6 +518,17 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **Crouch hitbox + crouch-walk** ([`player`](src/player.rs),
+  [`physics`](src/physics.rs), [`anim`](src/anim.rs)). Holding **Down** on the ground now
+  **shrinks the collision box** (`CROUCH_HALF`, ~⅔ height) — it shrinks from the top with the
+  feet planted, so the sprite doesn't move — letting the player fit under a one-tile gap or a
+  passing platform (the mover slides over a crouched player instead of squishing them). Adding
+  a direction (e.g. `S`+`D` / Down + a direction) does a **crouch-walk**: slower than a walk
+  (`crouch_speed`), with its own squashed walk cycle (player sheet is now **6×8**, row 7 from
+  [`tools/gen_player_poses.py`](tools/gen_player_poses.py)). You stay crouched under a low
+  ceiling until there's headroom to stand, so you can't pop through it. A **riding** player's
+  horizontal carry is now collision-checked too, so standing on a moving platform no longer
+  slides you through a one-tile gap that should require a crouch.
 - **2026-06-29** — **World-map glyphs + trigger zoom** ([`worldmap`](src/worldmap.rs),
   [`input`](src/input.rs)). The map's on-screen hints now render the actual button **icons**
   on a controller (close / move / zoom) instead of words, using the same embedded icon font as

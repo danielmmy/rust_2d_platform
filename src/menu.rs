@@ -315,6 +315,7 @@ fn control_sections(builder: bool, save: &Save) -> Vec<(&'static str, Vec<Contro
             vec![
                 ControlRow::new("Move", "A D", STICK),
                 ControlRow::new("Look up / crouch", "W S", DPAD_UD),
+                ControlRow::new("Crouch-walk", "S + A/D", DPAD),
             ],
         ),
         ("ACTIONS", actions),

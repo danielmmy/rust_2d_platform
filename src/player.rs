@@ -12,6 +12,10 @@
 //!   **auto-cling** and slow your fall; press **away** to let go. Jumping launches up and
 //!   away from the wall (a brief control lockout keeps the launch), so you can zig-zag
 //!   between facing walls.
+//! * **Crouch + crouch-walk** — hold **Down** on the ground to shrink the hitbox (it shrinks
+//!   from the top, feet planted) so you fit under a one-tile gap or a passing platform; add a
+//!   direction to crouch-walk at [`MovementConfig::crouch_speed`]. You stay crouched under a
+//!   low ceiling until there's room to stand.
 
 use bevy::prelude::*;
 
@@ -25,6 +29,11 @@ use crate::state::GameState;
 
 /// Collision half-extents (the sprite is a touch larger).
 pub const PLAYER_HALF: Vec2 = Vec2::new(11.0, 19.0);
+
+/// Collision half-extents while crouching — same width, ~⅔ the height (matching the squashed
+/// crouch pose), so the player fits under a one-tile gap (a low ceiling or a passing
+/// platform). The box shrinks from the **top** with the feet planted (see [`movement`]).
+pub const CROUCH_HALF: Vec2 = Vec2::new(11.0, 12.0);
 
 /// Seconds between footstep sounds while running on the ground.
 const FOOTSTEP_INTERVAL: f32 = 0.30;
@@ -63,12 +72,20 @@ pub struct JumpState {
     /// Sprinting (dash button held while moving). Decided on the ground, then carried
     /// through jumps/falls so the run's momentum survives the air and resumes on landing.
     running: bool,
+    /// Crouched this frame: Down held on the ground, or kept crouched while a low ceiling
+    /// blocks standing up. Shrinks the hitbox and caps speed to a crouch-walk.
+    crouching: bool,
 }
 
 impl JumpState {
     /// Whether the player is standing on the ground (read by animation).
     pub fn grounded(&self) -> bool {
         self.grounded
+    }
+
+    /// Whether the player is crouched (read by animation for the crouch / crouch-walk poses).
+    pub fn crouching(&self) -> bool {
+        self.crouching
     }
 
     /// Whether the player is sprinting (read by animation for the run cycle).
@@ -217,6 +234,8 @@ pub struct MovementConfig {
     pub dash_cd: f32,
     /// Sustained run speed when the dash button stays held after a dash (> `run_speed`).
     pub sprint_speed: f32,
+    /// Crouch-walk speed (Down held while moving) — slower than `run_speed`, reduced hitbox.
+    pub crouch_speed: f32,
 }
 
 impl Default for MovementConfig {
@@ -241,6 +260,7 @@ impl Default for MovementConfig {
             dash_time: 0.16,
             dash_cd: 0.45,
             sprint_speed: 420.0,
+            crouch_speed: 130.0,
         }
     }
 }
@@ -325,12 +345,29 @@ pub(crate) fn movement(
         }
         let dashing = jump.dash > 0.0;
 
+        // --- crouch: hold Down on the ground to shrink the hitbox (so the player fits under a
+        // one-tile gap or a passing platform) and slow to a crouch-walk. Once crouched, stay
+        // crouched even after releasing Down while a ceiling would block standing up, so you
+        // can't pop through a low platform. The box shrinks from the top, feet planted. ---
+        let body = transform.translation.truncate();
+        let can_stand = !physics::blocked(&solids, &platforms, body, PLAYER_HALF);
+        let crouching = jump.grounded
+            && !dashing
+            && !stunned
+            && (intent.down || (jump.crouching && !can_stand));
+        jump.crouching = crouching;
+        let half = if crouching { CROUCH_HALF } else { PLAYER_HALF };
+        let crouch_drop = PLAYER_HALF.y - half.y;
+
         // Sprint state: decided while grounded (dash button held + moving), then left
         // untouched in the air so a jump/fall carries the run's momentum and resumes it on
-        // landing. Only re-evaluated once back on the ground.
+        // landing. Only re-evaluated once back on the ground. Crouching suppresses the sprint.
         if jump.grounded {
-            jump.running =
-                abilities.dash && intent.dash_held && !stunned && intent.move_x.abs() > 0.1;
+            jump.running = abilities.dash
+                && intent.dash_held
+                && !stunned
+                && !crouching
+                && intent.move_x.abs() > 0.1;
         }
 
         if !stunned && !dashing {
@@ -356,7 +393,9 @@ pub(crate) fn movement(
             if !locked {
                 // Running (see above) sustains a faster sprint speed; the run state carries
                 // through the air, so a jump keeps its momentum and a landing keeps running.
-                let speed = if jump.running {
+                let speed = if crouching {
+                    cfg.crouch_speed
+                } else if jump.running {
                     cfg.sprint_speed
                 } else {
                     cfg.run_speed
@@ -461,33 +500,40 @@ pub(crate) fn movement(
         // --- integrate + collide (X then Y), against the static grid then any moving
         // platforms. A platform the player is standing on first carries them along. ---
         let was_grounded = jump.grounded;
-        let mut center = transform.translation.truncate();
-        if let Some(d) = physics::carry_delta(&platforms, center, PLAYER_HALF) {
-            center += d;
-        }
+        // Collide a feet-anchored box: drop the centre by `crouch_drop` so the shrunk crouch
+        // box keeps its feet on the ground (it shrinks from the top); the offset is restored
+        // on write-back, so the transform — and thus the sprite — never moves when crouching.
+        let mut center = transform.translation.truncate() - Vec2::new(0.0, crouch_drop);
+        // A platform the player rides carries them along. Fold its **horizontal** carry into
+        // the X move so it's collision-checked too — otherwise the rider is teleported sideways
+        // and can be slid through a wall / low ceiling the platform passes under (e.g. squeezing
+        // a standing player through a one-tile gap that should require a crouch). The vertical
+        // carry stays a direct shift, so gravity still re-seats the feet for grounding.
+        let carry = physics::carry_delta(&platforms, center, half).unwrap_or(Vec2::ZERO);
+        center.y += carry.y;
 
-        let dx = velocity.0.x * dt;
-        let blocked_x = physics::collide_x(&solids, &mut center, PLAYER_HALF, dx)
-            | physics::resolve_platforms_x(&platforms, &mut center, PLAYER_HALF, dx);
+        let dx = carry.x + velocity.0.x * dt;
+        let blocked_x = physics::collide_x(&solids, &mut center, half, dx)
+            | physics::resolve_platforms_x(&platforms, &mut center, half, dx);
         if blocked_x {
             velocity.0.x = 0.0;
         }
 
         let dy = velocity.0.y * dt;
-        let (sb, sl) = physics::collide_y(&solids, &mut center, PLAYER_HALF, dy);
+        let (sb, sl) = physics::collide_y(&solids, &mut center, half, dy);
 
         // Squish: a descending platform pressing the player down while they're supported from
         // below. Rather than clipping them up onto its top, shove them out the nearer side and
-        // hurt them (i-frames mean repeated frames count as one hit).
-        if physics::supported_below(&solids, &platforms, center, PLAYER_HALF)
-            && let Some((push_x, src)) =
-                physics::squish_push_x(&solids, &platforms, center, PLAYER_HALF)
+        // hurt them (i-frames mean repeated frames count as one hit). Crouching shrinks `half`,
+        // so a platform that clears the lowered head no longer registers as a squish.
+        if physics::supported_below(&solids, &platforms, center, half)
+            && let Some((push_x, src)) = physics::squish_push_x(&solids, &platforms, center, half)
         {
             center.x = push_x;
             hurt.write(Hurt::From(src));
         }
 
-        let (pb, pl) = physics::resolve_platforms_y(&platforms, &mut center, PLAYER_HALF, dy);
+        let (pb, pl) = physics::resolve_platforms_y(&platforms, &mut center, half, dy);
         if sb || pb {
             velocity.0.y = 0.0;
         }
@@ -508,6 +554,6 @@ pub(crate) fn movement(
         }
 
         transform.translation.x = center.x;
-        transform.translation.y = center.y;
+        transform.translation.y = center.y + crouch_drop;
     }
 }

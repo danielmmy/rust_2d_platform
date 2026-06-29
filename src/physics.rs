@@ -155,6 +155,14 @@ pub fn supported_below(solids: &Solids, platforms: &Platforms, center: Vec2, hal
     })
 }
 
+/// Whether an AABB at `center` overlaps any solid tile or moving platform. The `EPS` insets
+/// mean a box resting flush on the floor (or flush against a wall) doesn't count — only a real
+/// interior overlap does. Used to keep a crouched player from standing up into a low ceiling.
+pub fn blocked(solids: &Solids, platforms: &Platforms, center: Vec2, half: Vec2) -> bool {
+    aabb_in_solid(solids, center.x, center.y, half)
+        || platforms.0.iter().any(|b| overlaps(center, half, b))
+}
+
 /// Whether an AABB centred at `(x, center.y)` would overlap a static solid (used to avoid
 /// shoving a squished player straight into a wall).
 fn aabb_in_solid(solids: &Solids, x: f32, y: f32, half: Vec2) -> bool {
@@ -401,6 +409,29 @@ mod tests {
             Vec2::new(16.0, 59.0),
             half
         )); // floating
+    }
+
+    #[test]
+    fn crouch_box_clears_a_one_tile_gap_a_stand_box_does_not() {
+        // Floor at row 0; a ceiling tile at row 2 (y in [64,96]) leaves a one-tile gap (row 1).
+        // Feet at y=32: a standing box (half-h 19, head 70) bites the ceiling; a crouch box
+        // (half-h 12, head 56) clears it.
+        let solids = solids(&[(0, 2)]);
+        let empty = Platforms(vec![]);
+        let stand_center = Vec2::new(16.0, 32.0 + 19.0);
+        let crouch_center = Vec2::new(16.0, 32.0 + 12.0);
+        assert!(blocked(
+            &solids,
+            &empty,
+            stand_center,
+            Vec2::new(11.0, 19.0)
+        ));
+        assert!(!blocked(
+            &solids,
+            &empty,
+            crouch_center,
+            Vec2::new(11.0, 12.0)
+        ));
     }
 
     #[test]
