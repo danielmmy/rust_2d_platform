@@ -83,7 +83,9 @@ Jump is **hold-to-go-higher**, with **coyote time** (jump just after a ledge) an
 the neighbouring room scrolls in. Each room has its own background colour.
 
 Press **`M`** (or **`Start`**) to open the **world map**, which has **three zoom
-levels** — press **jump** to zoom in and **`X`** (gamepad **`B`**) to zoom out:
+levels** — `Space` / **R2** to zoom in and `X` / **L2** to zoom out (zoom sits on the
+triggers so **Circle** / `Esc` can close the map / go back). Its on-screen hints draw the
+actual button **glyphs** on a controller (via the icon font):
 
 - **Window** (default) — a scrollable 4×3 window of rooms, so each stays readable
   no matter how many you add; it scrolls to follow your selection.
@@ -512,6 +514,13 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **World-map glyphs + trigger zoom** ([`worldmap`](src/worldmap.rs),
+  [`input`](src/input.rs)). The map's on-screen hints now render the actual button **icons**
+  on a controller (close / move / zoom) instead of words, using the same embedded icon font as
+  the Controls sheet (the hint text sets the font at spawn, so it never flashes on a redraw).
+  **Zoom moved to the triggers** — **R2** in / **L2** out (still `Space` / `X` on keyboard) —
+  which frees **Circle** to act as **back**: `Esc` / **Circle** now closes the map (the `M` /
+  **Start** toggle still works too).
 - **2026-06-29** — **Menu back/cancel shortcut + quit confirmation** ([`menu`](src/menu.rs)).
   `Esc` / **Circle** now steps back one screen anywhere in the title or pause menus (resuming
   the game from the pause root), so you no longer have to scroll down to a "Back" row; the

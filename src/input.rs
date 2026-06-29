@@ -46,10 +46,6 @@ impl LastInput {
     pub fn confirm(self) -> &'static str {
         if self.pad() { "Cross" } else { "Enter" }
     }
-    /// Jump — `Space` or **Cross** (also the world map's zoom-in).
-    pub fn jump(self) -> &'static str {
-        if self.pad() { "Cross" } else { "Space" }
-    }
     /// Back / cancel / close — `Esc` or **Circle**.
     pub fn cancel(self) -> &'static str {
         if self.pad() { "Circle" } else { "Esc" }
@@ -57,10 +53,6 @@ impl LastInput {
     /// Up/Down menu navigation.
     pub fn updown(self) -> &'static str {
         if self.pad() { "D-Pad" } else { "Up/Down" }
-    }
-    /// Free directional movement (e.g. the world map).
-    pub fn move_dir(self) -> &'static str {
-        if self.pad() { "D-Pad" } else { "arrows" }
     }
     /// Interact prompt token: keyboard `E`, or the PlayStation **Triangle glyph**. Both
     /// consumers (the bench / chest prompts) draw it in the icon font, so the gamepad case
@@ -72,13 +64,35 @@ impl LastInput {
             "E"
         }
     }
-    /// World-map toggle — `M` or **Options**.
-    pub fn map(self) -> &'static str {
-        if self.pad() { "Options" } else { "M" }
+    // --- World-map hint tokens. These are drawn in the icon font (see
+    // `crate::menu::PromptGlyph` / `crate::glyph`), so the gamepad side is a button glyph. ---
+    /// Move the map cursor: the **D-pad** glyph, or the word `arrows`.
+    pub fn map_move(self) -> &'static str {
+        if self.pad() {
+            crate::glyph::DPAD
+        } else {
+            "arrows"
+        }
     }
-    /// Map zoom-out — `X` or **Circle**.
-    pub fn zoom_out(self) -> &'static str {
-        if self.pad() { "Circle" } else { "X" }
+    /// Zoom the map in one level: the **R2** trigger glyph, or `Space`.
+    pub fn map_zoom_in(self) -> &'static str {
+        if self.pad() {
+            crate::glyph::R2
+        } else {
+            "Space"
+        }
+    }
+    /// Zoom the map out one level: the **L2** trigger glyph, or `X`.
+    pub fn map_zoom_out(self) -> &'static str {
+        if self.pad() { crate::glyph::L2 } else { "X" }
+    }
+    /// Close the map / step back: the **Circle** glyph, or `Esc`.
+    pub fn map_close(self) -> &'static str {
+        if self.pad() {
+            crate::glyph::CIRCLE
+        } else {
+            "Esc"
+        }
     }
 }
 

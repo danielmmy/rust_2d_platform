@@ -385,8 +385,8 @@ fn cancel_just_pressed(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>) 
 ///
 /// [PromptFont]: https://shinmera.com/promptfont
 #[derive(Resource)]
-struct UiFonts {
-    prompt: Handle<Font>,
+pub(crate) struct UiFonts {
+    pub(crate) prompt: Handle<Font>,
 }
 
 /// Marks a [`Text2d`] whose text is icon-font glyphs; [`apply_prompt_font`] swaps the

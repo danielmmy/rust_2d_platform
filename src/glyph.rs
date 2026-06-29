@@ -8,11 +8,15 @@
 
 // PlayStation face buttons (PromptFont keys them off these dashed arrows by direction).
 pub(crate) const CROSS: &str = "\u{21E3}"; // down  -> Cross
+pub(crate) const CIRCLE: &str = "\u{21E2}"; // right -> Circle
 pub(crate) const SQUARE: &str = "\u{21E0}"; // left  -> Square
 pub(crate) const TRIANGLE: &str = "\u{21E1}"; // up    -> Triangle
-// Shoulders, d-pad, stick, and the menu buttons.
+// Shoulders, triggers, d-pad, stick, and the menu buttons.
 pub(crate) const L1: &str = "\u{21B0}"; // left shoulder
 pub(crate) const R1: &str = "\u{21B1}"; // right shoulder
+pub(crate) const L2: &str = "\u{21B2}"; // left trigger
+pub(crate) const R2: &str = "\u{21B3}"; // right trigger
+pub(crate) const DPAD: &str = "\u{21CE}"; // full d-pad
 pub(crate) const DPAD_UD: &str = "\u{21A3}"; // d-pad up/down
 pub(crate) const STICK: &str = "\u{21CD}"; // left analog stick
 pub(crate) const OPTIONS: &str = "\u{21E8}"; // Options (Start)

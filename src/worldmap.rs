@@ -1,8 +1,9 @@
 //! A pause-screen world map (toggle with `M` or the gamepad `Start` button).
 //!
 //! Rooms are laid out in a grid sized from their names (`r{col}_{row}`). The map
-//! has **three zoom levels**, stepped through with jump (zoom in) and `X` (zoom
-//! out):
+//! has **three zoom levels**, stepped with the triggers — **R2** zoom in / **L2** zoom out
+//! on a gamepad, or `Space` / `X` on the keyboard — and closed with **Circle** / `Esc`
+//! (or the same `M` / **Start** that opened it):
 //!
 //! * **Window** (the default) — a scrollable `4×3` window of rooms, so each stays
 //!   readable however many rooms exist; it scrolls to keep the selection in view.
@@ -20,7 +21,7 @@
 use bevy::prelude::*;
 
 use crate::input::LastInput;
-use crate::menu::Paused;
+use crate::menu::{Paused, UiFonts};
 use crate::state::GameState;
 use crate::world::{
     BENCH_GLYPH, CurrentRoom, ENEMY_GLYPH, FOG_GLYPH, GameAssets, MapData, START_MARKER,
@@ -126,6 +127,7 @@ fn toggle_map(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn open_map(
     mut commands: Commands,
     mut cursor: ResMut<MapCursor>,
@@ -133,6 +135,7 @@ fn open_map(
     assets: Res<GameAssets>,
     maps: Res<Assets<MapData>>,
     last: Res<LastInput>,
+    ui_fonts: Res<UiFonts>,
     camera: Query<&Transform, With<Camera2d>>,
 ) {
     if let Some((gx, gy)) = parse_pos(&current.name) {
@@ -149,6 +152,7 @@ fn open_map(
         &current.name,
         &cursor,
         *last,
+        &ui_fonts.prompt,
     );
 }
 
@@ -173,10 +177,20 @@ fn navigate_map(
     assets: Res<GameAssets>,
     maps: Res<Assets<MapData>>,
     last: Res<LastInput>,
+    ui_fonts: Res<UiFonts>,
+    mut map_view: ResMut<NextState<MapView>>,
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<WorldMapEntity>>,
     mut highlight: Query<&mut Transform, (With<CursorHighlight>, Without<Camera2d>)>,
 ) {
+    // Circle / Esc closes the map (Start / M toggle it too, via `toggle_map`).
+    let close = keys.just_pressed(KeyCode::Escape)
+        || gamepads.iter().any(|g| g.just_pressed(GamepadButton::East));
+    if close {
+        map_view.set(MapView::Closed);
+        return;
+    }
+
     let left = pressed_any(
         &keys,
         &[KeyCode::ArrowLeft, KeyCode::KeyA],
@@ -201,13 +215,16 @@ fn navigate_map(
         &gamepads,
         GamepadButton::DPadDown,
     );
+    // Zoom lives on the triggers now (R2 in / L2 out) so Circle is free to mean "back".
     let zoom_in = keys.just_pressed(KeyCode::Space)
         || keys.just_pressed(KeyCode::KeyZ)
         || gamepads
             .iter()
-            .any(|g| g.just_pressed(GamepadButton::South));
+            .any(|g| g.just_pressed(GamepadButton::RightTrigger2));
     let zoom_out = keys.just_pressed(KeyCode::KeyX)
-        || gamepads.iter().any(|g| g.just_pressed(GamepadButton::East));
+        || gamepads
+            .iter()
+            .any(|g| g.just_pressed(GamepadButton::LeftTrigger2));
 
     let (cols, rows) = grid_dims(&assets.room_names);
     let nx = (cursor.gx + i32::from(right) - i32::from(left)).clamp(0, cols - 1);
@@ -241,6 +258,7 @@ fn navigate_map(
             &current.name,
             &cursor,
             *last,
+            &ui_fonts.prompt,
         );
     } else if moved {
         // Full-world view: just slide the selection outline — no redraw needed.
@@ -264,11 +282,30 @@ fn draw_level(
     current_name: &str,
     cursor: &MapCursor,
     last: LastInput,
+    font: &Handle<Font>,
 ) {
     match cursor.zoom {
-        Zoom::World => draw_overview(commands, center, assets, maps, current_name, cursor, last),
-        Zoom::Window => draw_window(commands, center, assets, maps, current_name, cursor, last),
-        Zoom::Room => draw_zoom(commands, center, assets, maps, cursor, last),
+        Zoom::World => draw_overview(
+            commands,
+            center,
+            assets,
+            maps,
+            current_name,
+            cursor,
+            last,
+            font,
+        ),
+        Zoom::Window => draw_window(
+            commands,
+            center,
+            assets,
+            maps,
+            current_name,
+            cursor,
+            last,
+            font,
+        ),
+        Zoom::Room => draw_zoom(commands, center, assets, maps, cursor, last, font),
     }
 }
 
@@ -283,6 +320,7 @@ fn draw_window(
     current_name: &str,
     cursor: &MapCursor,
     last: LastInput,
+    font: &Handle<Font>,
 ) {
     backdrop(commands, center);
     label(
@@ -291,6 +329,7 @@ fn draw_window(
         Vec2::new(0.0, GRID_H / 2.0 + 36.0),
         30.0,
         "WORLD MAP",
+        font,
     );
     label(
         commands,
@@ -299,11 +338,12 @@ fn draw_window(
         17.0,
         &format!(
             "[{}] close    move: {}    [{}] zoom in    [{}] zoom out",
-            last.map(),
-            last.move_dir(),
-            last.jump(),
-            last.zoom_out()
+            last.map_close(),
+            last.map_move(),
+            last.map_zoom_in(),
+            last.map_zoom_out()
         ),
+        font,
     );
 
     let (cols, rows) = grid_dims(&assets.room_names);
@@ -362,6 +402,7 @@ fn draw_overview(
     current_name: &str,
     cursor: &MapCursor,
     last: LastInput,
+    font: &Handle<Font>,
 ) {
     backdrop(commands, center);
     label(
@@ -370,6 +411,7 @@ fn draw_overview(
         Vec2::new(0.0, GRID_H / 2.0 + 36.0),
         30.0,
         "WORLD MAP",
+        font,
     );
     label(
         commands,
@@ -378,10 +420,11 @@ fn draw_overview(
         17.0,
         &format!(
             "[{}] close    move: {}    [{}] zoom in",
-            last.map(),
-            last.move_dir(),
-            last.jump()
+            last.map_close(),
+            last.map_move(),
+            last.map_zoom_in()
         ),
+        font,
     );
 
     let (cols, rows) = grid_dims(&assets.room_names);
@@ -432,6 +475,7 @@ fn draw_zoom(
     maps: &Assets<MapData>,
     cursor: &MapCursor,
     last: LastInput,
+    font: &Handle<Font>,
 ) {
     backdrop(commands, center);
     let key = format!("r{}_{}", cursor.gx, cursor.gy);
@@ -442,12 +486,13 @@ fn draw_zoom(
             Vec2::new(0.0, 220.0),
             26.0,
             map.display_name(&key),
+            font,
         );
-        label(commands, center, Vec2::new(0.0, 196.0), 14.0, &key);
+        label(commands, center, Vec2::new(0.0, 196.0), 14.0, &key, font);
         draw_room(commands, center, Vec2::new(760.0, 392.0), map, 91.0);
     } else {
-        label(commands, center, Vec2::new(0.0, 216.0), 26.0, &key);
-        label(commands, center, Vec2::ZERO, 20.0, "- empty -");
+        label(commands, center, Vec2::new(0.0, 216.0), 26.0, &key, font);
+        label(commands, center, Vec2::ZERO, 20.0, "- empty -", font);
     }
     label(
         commands,
@@ -456,10 +501,11 @@ fn draw_zoom(
         17.0,
         &format!(
             "[{}] zoom out    move: {}    [{}] close",
-            last.zoom_out(),
-            last.move_dir(),
-            last.map()
+            last.map_zoom_out(),
+            last.map_move(),
+            last.map_close()
         ),
+        font,
     );
 }
 
@@ -553,11 +599,23 @@ fn ring(commands: &mut Commands, pos: Vec2, size: Vec2, z: f32, color: Color, se
     }
 }
 
-fn label(commands: &mut Commands, center: Vec2, offset: Vec2, size: f32, text: &str) {
+/// A map overlay label. Drawn in the icon font so the device-hint lines can show button
+/// glyphs (the font's plain alphabet keeps ordinary text readable); the font is set here at
+/// spawn rather than via [`crate::menu::PromptGlyph`] so the always-visible hint never
+/// flashes a wrong-font frame on a redraw.
+fn label(
+    commands: &mut Commands,
+    center: Vec2,
+    offset: Vec2,
+    size: f32,
+    text: &str,
+    font: &Handle<Font>,
+) {
     commands.spawn((
         WorldMapEntity,
         Text2d::new(text),
         TextFont {
+            font: FontSource::Handle(font.clone()),
             font_size: FontSize::Px(size),
             ..default()
         },
