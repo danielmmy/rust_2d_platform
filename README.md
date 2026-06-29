@@ -522,6 +522,11 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **Squish/crouch fixes.** The forced crouch now triggers **only for a
+  platform descending onto you from overhead** (`physics::ducking_under`) — riding a platform
+  **up**, or pressing against one's **side**, no longer spuriously auto-crouches. The horizontal
+  squish now needs a real side-on bite (≥ half the body), so brushing a platform raised a tile
+  overhead no longer shoves you up. ([`player`](src/player.rs), [`physics`](src/physics.rs))
 - **2026-06-29** — **Graduated squish + horizontal squish + side-ride fix**
   ([`player`](src/player.rs), [`physics`](src/physics.rs), [`movers`](src/movers.rs)). A
   platform coming **down** now **forces a crouch** first (you duck under it) and only **hurts**

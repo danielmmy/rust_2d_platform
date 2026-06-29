@@ -14,9 +14,10 @@
 //!   between facing walls.
 //! * **Crouch + crouch-walk** — hold **Down** on the ground to shrink the hitbox (it shrinks
 //!   from the top, feet planted) so you fit under a one-tile gap or a passing platform; add a
-//!   direction to crouch-walk at [`MovementConfig::crouch_speed`]. You're also **forced** to
-//!   crouch whenever standing is blocked — a descending platform first ducks you under it, and
-//!   only crushes ([`Hurt`]) you if it keeps coming and bites even the crouched box.
+//!   direction to crouch-walk at [`MovementConfig::crouch_speed`]. A platform **descending onto
+//!   you from overhead** also forces a duck, and only crushes ([`Hurt`]) you if it keeps coming
+//!   and bites even the crouched box — riding a platform up or pressing one's side never forces
+//!   a crouch.
 
 use bevy::prelude::*;
 
@@ -346,15 +347,20 @@ pub(crate) fn movement(
         }
         let dashing = jump.dash > 0.0;
 
-        // --- crouch: hold Down on the ground to shrink the hitbox (so the player fits under a
-        // one-tile gap or a passing platform) and slow to a crouch-walk. The player is **also
-        // forced** to crouch whenever a low ceiling or a descending platform blocks standing up
-        // — so a platform pressing down first ducks them under it; only if it keeps coming and
-        // bites even the crouched box does it squish (see the squish below). The box shrinks
-        // from the top with the feet planted. ---
+        // --- crouch: hold Down on the ground to shrink the hitbox (fit under a one-tile gap or
+        // a passing platform) and slow to a crouch-walk. A platform **descending onto you from
+        // overhead** also forces a duck (then a crush — see the squish below — if even the
+        // crouched box won't fit). Riding a platform up, or pressing against one's side, must
+        // *not* force a crouch, so the force is gated on `ducking_under`, not "anything
+        // overlapping the standing box". Once crouched, you stay down while a ceiling blocks
+        // standing up. The box shrinks from the top, feet planted. ---
         let body = transform.translation.truncate();
         let can_stand = !physics::blocked(&solids, &platforms, body, PLAYER_HALF);
-        let crouching = jump.grounded && !dashing && !stunned && (intent.down || !can_stand);
+        let force_duck = physics::ducking_under(&platforms, body, PLAYER_HALF);
+        let crouching = jump.grounded
+            && !dashing
+            && !stunned
+            && (intent.down || force_duck || (jump.crouching && !can_stand));
         jump.crouching = crouching;
         let half = if crouching { CROUCH_HALF } else { PLAYER_HALF };
         let crouch_drop = PLAYER_HALF.y - half.y;

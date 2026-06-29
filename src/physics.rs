@@ -171,6 +171,24 @@ pub fn blocked(solids: &Solids, platforms: &Platforms, center: Vec2, half: Vec2)
         || platforms.0.iter().any(|b| overlaps(center, half, b))
 }
 
+/// Whether a **descending** platform (`delta.y < 0`) is pressing down into the player's box
+/// from directly overhead — the player's centre is under its span and its underside has bitten
+/// into the body. Used to **force a crouch** (duck under it) rather than squish, as long as the
+/// crouched box still fits; if it doesn't, [`squish_push_x`] takes over as the crush. This is
+/// deliberately *not* "anything overlapping the standing box": a platform you ride **up**, or
+/// one you press against the **side** of, must not force a crouch.
+pub fn ducking_under(platforms: &Platforms, center: Vec2, half: Vec2) -> bool {
+    let (feet, head) = (center.y - half.y, center.y + half.y);
+    platforms.0.iter().any(|b| {
+        b.delta.y < 0.0
+            && (center.x - b.center.x).abs() < b.half.x // player is under its span
+            && {
+                let underside = b.center.y - b.half.y;
+                underside > feet && underside < head // pressing into the body from above
+            }
+    })
+}
+
 /// Whether an AABB centred at `(x, center.y)` would overlap a static solid (used to avoid
 /// shoving a squished player straight into a wall).
 fn aabb_in_solid(solids: &Solids, x: f32, y: f32, half: Vec2) -> bool {
@@ -254,6 +272,13 @@ pub fn squish_push_y(
         let lead = b.center.x + push * b.half.x; // the platform face leading its motion
         if lead <= left || lead >= right {
             continue; // resting against an edge / riding on top — no horizontal bite
+        }
+        // Require a real side-on bite over a good chunk of the body — not a head/foot-corner
+        // graze (e.g. brushing a platform raised a tile overhead), which must not shove you up.
+        let y_overlap = (center.y + half.y).min(b.center.y + b.half.y)
+            - (center.y - half.y).max(b.center.y - b.half.y);
+        if y_overlap < half.y {
+            continue;
         }
         // Only a squish if where the side-push *would* put the player is walled off.
         let pushed_to = b.center.x + push * (b.half.x + half.x);
@@ -543,5 +568,25 @@ mod tests {
         // With nowhere walled off, it's a normal side-push — not a squish.
         let open = solids(&[]);
         assert!(squish_push_y(&open, &platforms, center, half).is_none());
+    }
+
+    #[test]
+    fn ducking_under_only_for_a_descending_overhead_platform() {
+        let half = Vec2::new(11.0, 19.0);
+        let center = Vec2::new(16.0, 19.0); // feet 0, head 38, centre x 16
+
+        // Descending platform overhead (underside at 30, inside the body) → duck.
+        let descending = |dy: f32, cx: f32| {
+            Platforms(vec![PlatformBox {
+                center: Vec2::new(cx, 46.0), // half 16 → underside at 30
+                half: Vec2::splat(16.0),
+                delta: Vec2::new(0.0, dy),
+            }])
+        };
+        assert!(ducking_under(&descending(-2.0, 16.0), center, half));
+        // Rising (you're riding it up) → not a duck.
+        assert!(!ducking_under(&descending(2.0, 16.0), center, half));
+        // Descending but off to the side (centre not under it) → not a duck.
+        assert!(!ducking_under(&descending(-2.0, 60.0), center, half));
     }
 }
