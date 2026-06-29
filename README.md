@@ -258,6 +258,10 @@ walk off the edge and you cross through one (empty list = a wall / bottomless ed
         (tiles: [(22,18),(23,18),(24,18)], path: [(22,9),(30,9),(30,18)],
          mode: "loop", speed: 70, rest: 700),
     ],
+    slopes: [                    // inclined tiles (ramps) you walk/slide on (optional)
+        // the diagonal of the 2×1 tile box at (14,18): rises to the right (`/`), ~27°
+        (col: 14, row: 18, run: 2, rise: 1, dir: "right"),
+    ],
     bg:     [0.32, 0.16, 0.16],  // background colour [r, g, b] in 0..1
     tiles: [ "######", "#.@E#", "######" ],   // grid, top to bottom; `@` = start, `E` = enemy
 )
@@ -304,6 +308,18 @@ rooms show one of each mode over a 3-tile block: `r0_0` a `loop` patrol, `r1_0` 
 `pingpong` slider, `r2_0` a `once` lift. (Collision is a static cell grid, so a mover's
 solid tiles are lifted out of it and resolved as dynamic AABBs — see
 [`movers`](src/movers.rs) + [`physics`](src/physics.rs).)
+
+**Slopes** are inclined tiles you walk and slide on, listed under `slopes:` (coordinate
+data, like teleporters — no grid glyph). Each entry is the **diagonal of a `run`×`rise`
+tile box** whose top-left cell is `(col, row)`: `run` tiles wide, `rise` tiles tall, so the
+**angle is the ratio** — `1×1` is 45°, `2×1` ≈ 27°, `3×1` ≈ 18°, and so on (any ratio works).
+`dir` is `"right"` (`/`, low on the left) or `"left"` (`\`, low on the right). The player
+ground-snaps onto the diagonal, and a **slide heading downhill keeps its momentum** (the
+friction is switched off going down). A ramp renders as a flat wedge cut from the tile body.
+Put the **low end on a floor**; let the **high end** rise into open air (a peak/hump) or meet
+a higher floor — but note that walking *up* into a flush **solid** ledge currently snags at
+the very top (there's no step-up yet), so make ascents open ramps or pair them with a jump.
+`r1_1` ships a demo `/\` hump (two ramps meeting at a peak) on the floor.
 
 **Enemies** use one `E` glyph in the grid; the optional `enemies` array gives a
 `kind` (a [`combat::ENEMY_KINDS`](src/combat.rs) index) to the `E` at `(col, row)`.
@@ -524,6 +540,17 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **Inclined tiles (ramps).** A new kind of tile you walk and slide on: a
+  straight **ramp** at any angle ([`physics::Ramp`](src/physics.rs) / [`Slopes`](src/physics.rs)).
+  A room lists them under `slopes:` — each `(col, row, run, rise, dir)` is the diagonal of a
+  `run`×`rise` tile box, so the angle is just the ratio (`1×1` = 45°, `2×1` ≈ 27°, `3×1` ≈ 18°);
+  `dir` is `"right"` (`/`) or `"left"` (`\`). The player ground-snaps onto the diagonal
+  ([`physics::slope_ground`](src/physics.rs)), and a **slide heading downhill keeps its momentum**
+  (no friction) ([`player`](src/player.rs)). They render as a flat wedge "cut" from the tile
+  body (a `Mesh2d` triangle, [`world::build_ramp`](src/world.rs)). Place a ramp's low end on a
+  floor and let its high end rise into open air or meet a higher floor; `r1_1` has a demo `/\`
+  hump. (Walking *up* into a flush solid ledge isn't stepped over yet — design ascents as open
+  ramps, or pair them with a jump.)
 - **2026-06-29** — **Slide tackle.** Pressing **Down** while running or dashing launches a low,
   momentum-carrying **slide** ([`player`](src/player.rs), `slide_*` in `MovementConfig`): it
   rides at crouch height (slips under things) and bleeds off with friction, ending on its timer

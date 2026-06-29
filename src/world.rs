@@ -1330,27 +1330,33 @@ struct RampBuild<'w> {
     materials: ResMut<'w, Assets<ColorMaterial>>,
 }
 
+/// World-space endpoints (`left`, ordered `left.x < right.x`) of a ramp spec's surface — the
+/// diagonal of its `run`×`rise` tile box. The box's top-left grid cell is `(col, row)` with
+/// row 0 = top, so its world top is `(height - row)` tiles up and its bottom `rise` below.
+fn ramp_endpoints(spec: &SlopeCell, height: i32) -> (Vec2, Vec2) {
+    let left_x = spec.col as f32 * TILE;
+    let right_x = (spec.col + spec.run) as f32 * TILE;
+    let high_y = (height - spec.row) as f32 * TILE;
+    let low_y = (height - spec.row - spec.rise) as f32 * TILE;
+    if spec.rises_right {
+        (Vec2::new(left_x, low_y), Vec2::new(right_x, high_y)) // `/`: high on the right
+    } else {
+        (Vec2::new(left_x, high_y), Vec2::new(right_x, low_y)) // `\`: high on the left
+    }
+}
+
 /// Register one ramp's collision surface ([`Ramp`]) and spawn the triangle that renders it: the
 /// solid wedge below the surface, a flat [`RAMP_COLOR`] mesh "cutting" the tile on the diagonal.
 fn build_ramp(commands: &mut Commands, ramps: &mut RampBuild, spec: &SlopeCell, height: i32) {
-    let left_x = spec.col as f32 * TILE;
-    let right_x = (spec.col + spec.run) as f32 * TILE;
-    // The run×rise box's top/bottom in world-y (grid row 0 = top, y points up).
-    let high_y = (height - spec.row) as f32 * TILE;
-    let low_y = (height - spec.row - spec.rise) as f32 * TILE;
-    let (left, right, high_corner) = if spec.rises_right {
-        let r = (Vec2::new(left_x, low_y), Vec2::new(right_x, high_y));
-        (r.0, r.1, r.1) // `/`: high on the right
-    } else {
-        let r = (Vec2::new(left_x, high_y), Vec2::new(right_x, low_y));
-        (r.0, r.1, Vec2::new(left_x, high_y)) // `\`: high on the left
-    };
+    let (left, right) = ramp_endpoints(spec, height);
     ramps.slopes.0.push(Ramp { left, right });
 
-    // Wedge: the two base corners plus the high corner.
+    // Wedge: the two base corners (at the low edge) plus the higher of the two endpoints.
+    let low_y = left.y.min(right.y);
+    let high_corner = if left.y > right.y { left } else { right };
     let tri = [
-        Vec2::new(left_x, low_y),
-        Vec2::new(right_x, low_y),
+        Vec2::new(left.x, low_y),
+        Vec2::new(right.x, low_y),
         high_corner,
     ];
     let mut mesh = Mesh::new(
@@ -1850,6 +1856,40 @@ fn despawn_bench_prompt(mut commands: Commands, prompts: Query<Entity, With<Benc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ramp_endpoints_map_grid_box_to_world_diagonal() {
+        // A 20-tall room. A `/` ramp, top-left cell (4, 18), 2 wide × 1 tall.
+        let spec = SlopeCell {
+            col: 4,
+            row: 18,
+            run: 2,
+            rise: 1,
+            rises_right: true,
+        };
+        let (left, right) = ramp_endpoints(&spec, 20);
+        // x spans cols 4..6; world bottom of the box is (20-18-1)=1 tile up, top is 2 tiles up.
+        assert_eq!(
+            left,
+            Vec2::new(4.0 * TILE, 1.0 * TILE),
+            "low end on the left"
+        );
+        assert_eq!(
+            right,
+            Vec2::new(6.0 * TILE, 2.0 * TILE),
+            "high end on the right"
+        );
+        // The `\` mirror: high on the left, same box.
+        let (l, r) = ramp_endpoints(
+            &SlopeCell {
+                rises_right: false,
+                ..spec
+            },
+            20,
+        );
+        assert_eq!(l, Vec2::new(4.0 * TILE, 2.0 * TILE));
+        assert_eq!(r, Vec2::new(6.0 * TILE, 1.0 * TILE));
+    }
 
     /// The binary must carry a complete, valid Story campaign **and** every sprite the
     /// game asks for — so a release exe runs with no `assets/` folder. (No disk or GPU:
