@@ -33,7 +33,8 @@ use crate::scenery;
 use crate::state::GameState;
 use crate::world::{
     ArenaSpawn, BENCH_GLYPH, Chest, CurrentRoom, Door, ENEMY_GLYPH, EnemySpawn, FOG_GLYPH,
-    GameAssets, LevelRoot, MapData, MoveMode, Mover, START_MARKER, Scenery, Teleport, map_fs_path,
+    GameAssets, LevelRoot, MapData, MoveMode, Mover, START_MARKER, Scenery, SlopeCell, Teleport,
+    map_fs_path,
 };
 use crate::worldmap::MapView;
 
@@ -121,6 +122,7 @@ struct EditBuffer {
     music: String,            // background-music track name (N cycles it; "" = none)
     boss_reward: String,      // ability this room's boss grants (O-key cycles; "" = none)
     chests: Vec<Chest>,       // treasure chests placed in this room (Chest brush)
+    slopes: Vec<SlopeCell>,   // inclined tiles (authored in the .ron; preserved across edits)
     chest_ability: Ability,   // which ability the Chest brush places (K cycles)
     ability_menu: Option<usize>, // Some(cursor) while the Y ability-toggle menu is open
     bg: [f32; 3],
@@ -1886,6 +1888,7 @@ fn standard_map(bg: [f32; 3], grid: Vec<Vec<char>>) -> MapData {
         music: String::new(),
         boss_reward: String::new(),
         chests: Vec::new(),
+        slopes: Vec::new(),
         bg,
         tiles: grid
             .into_iter()
@@ -1988,6 +1991,7 @@ fn blank_map(bg: [f32; 3]) -> MapData {
         music: String::new(),
         boss_reward: String::new(),
         chests: Vec::new(),
+        slopes: Vec::new(),
         bg,
         tiles: g.into_iter().map(|row| row.into_iter().collect()).collect(),
     }
@@ -2069,6 +2073,7 @@ fn buffer_from_map(name: &str, map: &MapData) -> EditBuffer {
         music: map.music.clone(),
         boss_reward: map.boss_reward.clone(),
         chests: map.chests.clone(),
+        slopes: map.slopes.clone(),
         bg: map.bg,
         status: format!("editing {}", map.display_name(name)),
         ..default()
@@ -2109,6 +2114,7 @@ fn map_from_buffer(buffer: &EditBuffer) -> MapData {
         music: buffer.music.clone(),
         boss_reward: buffer.boss_reward.clone(),
         chests: buffer.chests.clone(),
+        slopes: buffer.slopes.clone(),
         bg: buffer.bg,
         tiles: buffer
             .grid

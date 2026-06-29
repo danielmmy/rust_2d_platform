@@ -11,6 +11,10 @@
     ],
     enemies: [
     ],
+    slopes: [
+        (col: 14, row: 20, run: 2, rise: 1, dir: "right"),
+        (col: 16, row: 20, run: 2, rise: 1, dir: "left"),
+    ],
     fog_wall: [
         (boss: 0, kind: 0, col: 18, row: 8),
         (boss: 0, kind: 0, col: 24, row: 14),

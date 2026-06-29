@@ -29,7 +29,7 @@ use crate::GameSet;
 use crate::audio::{PlaySfx, Sfx};
 use crate::health::{Hurt, Stun};
 use crate::input::PlayerIntent;
-use crate::physics::{self, Platforms, Solids};
+use crate::physics::{self, Platforms, Slopes, Solids};
 use crate::save::Save;
 use crate::state::GameState;
 
@@ -324,6 +324,7 @@ pub(crate) fn movement(
     cfg: Res<MovementConfig>,
     solids: Res<Solids>,
     platforms: Res<Platforms>,
+    slopes: Res<Slopes>,
     stun: Res<Stun>,
     abilities: Res<Abilities>,
     mut hurt: MessageWriter<Hurt>,
@@ -572,9 +573,15 @@ pub(crate) fn movement(
         }
 
         // --- slide: keep the launch direction, bleed the speed off with friction (momentum),
-        // and face the way you're sliding. Gravity (above) keeps you on the ground. ---
+        // and face the way you're sliding. Gravity (above) keeps you on the ground. Heading
+        // **down a ramp**, skip the friction entirely so the slide carries its momentum. ---
         if sliding {
-            velocity.0.x = approach(velocity.0.x, 0.0, cfg.slide_friction * dt);
+            let here = transform.translation.truncate() - Vec2::new(0.0, crouch_drop);
+            let downhill = physics::slope_surface_at(&slopes, here.x, here.y - half.y)
+                .is_some_and(|(_, grad)| grad * jump.slide_dir < 0.0);
+            if !downhill {
+                velocity.0.x = approach(velocity.0.x, 0.0, cfg.slide_friction * dt);
+            }
             sprite.flip_x = jump.slide_dir < 0.0;
         }
 
@@ -619,6 +626,17 @@ pub(crate) fn movement(
             hurt.write(Hurt::From(src));
         }
         jump.grounded = sl || pl;
+
+        // --- inclined tiles: seat the feet on the ramp surface. Ramps aren't in the square
+        // grid, so the player falls/walks freely until this catches them on the diagonal.
+        // Only while not rising, so a jump off a ramp isn't snapped straight back down. ---
+        if velocity.0.y <= 0.0
+            && let Some(snapped) = physics::slope_ground(&slopes, center, half, was_grounded)
+        {
+            center.y = snapped;
+            velocity.0.y = 0.0;
+            jump.grounded = true;
+        }
 
         // --- footsteps + landing thump ---
         if !was_grounded && jump.grounded && dy < 0.0 {

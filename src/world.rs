@@ -19,6 +19,7 @@ use bevy::asset::{AssetLoader, LoadContext};
 use bevy::ecs::system::SystemParam;
 use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
 use bevy::prelude::*;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
 
 use crate::GameSet;
 use crate::combat::{Bloodstain, ENEMY_HALF, ENEMY_KINDS, Enemy, LostEnergy};
@@ -26,7 +27,7 @@ use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
 use crate::input::{LastInput, PlayerIntent};
 use crate::menu::PromptGlyph;
-use crate::physics::{Solids, TILE};
+use crate::physics::{Ramp, Slopes, Solids, TILE};
 use crate::player::{Abilities, Ability, JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
 use crate::save::Save;
@@ -73,6 +74,31 @@ pub struct Chest {
 /// Unique id for a chest, used to remember it's been collected (`"room@col,row"`).
 fn chest_id(room: &str, col: i32, row: i32) -> String {
     format!("{room}@{col},{row}")
+}
+
+/// An **inclined tile** — a ramp you walk and slide on. It fills a `run`×`rise` box of tiles
+/// whose top-left cell is `(col, row)` (grid coords, row 0 = top); the walkable surface is that
+/// box's diagonal. `dir` is `"right"` (`/`, low on the left, high on the right) or `"left"`
+/// (`\`). The angle is free — pick any `run`/`rise` (e.g. `1×1` = 45°, `2×1` ≈ 27°, `3×1` ≈ 18°).
+/// Listed separately from the ASCII grid so a ramp can sit over otherwise-empty cells; fill in
+/// the solid below it with normal tiles. See [`crate::physics::Ramp`].
+#[derive(Clone, Copy)]
+pub struct SlopeCell {
+    pub col: i32,
+    pub row: i32,
+    pub run: i32,
+    pub rise: i32,
+    /// `true` rises to the right (`/`); `false` rises to the left (`\`).
+    pub rises_right: bool,
+}
+
+/// Parse a slope direction word (`"right"` ⇒ rises right) into `rises_right`.
+fn parse_slope_dir(s: &str) -> Result<bool, RonError> {
+    match s {
+        "right" => Ok(true),
+        "left" => Ok(false),
+        _ => Err(RonError("slope dir must be \"right\" or \"left\"".into())),
+    }
 }
 
 /// A one-way passage out of a room. Walking off the edge nearest `origin` loads room
@@ -261,6 +287,8 @@ pub struct MapData {
     pub boss_reward: String,
     /// Treasure chests in this room (each grants an ability when touched).
     pub chests: Vec<Chest>,
+    /// 45° ramp tiles you walk/slide on (see [`SlopeCell`]).
+    pub slopes: Vec<SlopeCell>,
     /// Background (clear) colour as `[r, g, b]` in 0..1.
     pub bg: [f32; 3],
     /// The grid, one string per row (top to bottom).
@@ -323,6 +351,23 @@ impl MapData {
                         row: c.field("row")?.as_i32()?,
                         ability: Ability::parse(c.field("ability")?.as_str()?)
                             .ok_or_else(|| RonError("unknown chest ability".into()))?,
+                    })
+                })
+                .collect::<Result<Vec<_>, RonError>>()?,
+            None => Vec::new(),
+        };
+
+        let slopes = match value.try_field("slopes") {
+            Some(list) => list
+                .as_list()?
+                .iter()
+                .map(|s| {
+                    Ok(SlopeCell {
+                        col: s.field("col")?.as_i32()?,
+                        row: s.field("row")?.as_i32()?,
+                        run: s.field("run")?.as_i32()?.max(1),
+                        rise: s.field("rise")?.as_i32()?.max(1),
+                        rises_right: parse_slope_dir(s.field("dir")?.as_str()?)?,
                     })
                 })
                 .collect::<Result<Vec<_>, RonError>>()?,
@@ -413,6 +458,7 @@ impl MapData {
                 .unwrap_or("")
                 .to_string(),
             chests,
+            slopes,
             bg,
             tiles,
         })
@@ -467,6 +513,17 @@ impl MapData {
                     c.col,
                     c.row,
                     c.ability.key()
+                )
+            })
+            .collect();
+        let slopes: String = self
+            .slopes
+            .iter()
+            .map(|s| {
+                let dir = if s.rises_right { "right" } else { "left" };
+                format!(
+                    "        (col: {}, row: {}, run: {}, rise: {}, dir: \"{dir}\"),\n",
+                    s.col, s.row, s.run, s.rise
                 )
             })
             .collect();
@@ -529,6 +586,7 @@ impl MapData {
              east: [\n{east}    ],\n    west: [\n{west}    ],\n    \
              teleports: [\n{teleports}    ],\n    enemies: [\n{enemies}    ],\n    \
              chests: [\n{chests}    ],\n    \
+             slopes: [\n{slopes}    ],\n    \
              fog_wall: [\n{fog_wall}    ],\n    fog_respawn: {},\n    \
              movers: [\n{movers}    ],\n    \
              scenery: (far: \"{}\", mid: \"{}\", near: \"{}\", fg: \"{}\"),\n    \
@@ -935,6 +993,7 @@ impl Plugin for WorldPlugin {
             .register_asset_loader(MapLoader)
             .add_message::<LoadMap>()
             .init_resource::<Solids>()
+            .init_resource::<Slopes>()
             .init_resource::<TransitionCooldown>()
             .init_resource::<CurrentRoom>()
             .init_resource::<RoomView>()
@@ -1258,6 +1317,67 @@ fn spawn_cell(
     }
 }
 
+/// Flat tile-body colour for ramp wedges (the square tiles are a near-flat grey, so a matching
+/// wedge reads as a tile cut on the diagonal). See [`build_ramp`].
+const RAMP_COLOR: Color = Color::srgb(92.0 / 255.0, 98.0 / 255.0, 116.0 / 255.0);
+
+/// Ramp-building assets, bundled into one [`SystemParam`] so [`handle_load_map`] stays within
+/// Bevy's system-argument limit.
+#[derive(SystemParam)]
+struct RampBuild<'w> {
+    slopes: ResMut<'w, Slopes>,
+    meshes: ResMut<'w, Assets<Mesh>>,
+    materials: ResMut<'w, Assets<ColorMaterial>>,
+}
+
+/// Register one ramp's collision surface ([`Ramp`]) and spawn the triangle that renders it: the
+/// solid wedge below the surface, a flat [`RAMP_COLOR`] mesh "cutting" the tile on the diagonal.
+fn build_ramp(commands: &mut Commands, ramps: &mut RampBuild, spec: &SlopeCell, height: i32) {
+    let left_x = spec.col as f32 * TILE;
+    let right_x = (spec.col + spec.run) as f32 * TILE;
+    // The run×rise box's top/bottom in world-y (grid row 0 = top, y points up).
+    let high_y = (height - spec.row) as f32 * TILE;
+    let low_y = (height - spec.row - spec.rise) as f32 * TILE;
+    let (left, right, high_corner) = if spec.rises_right {
+        let r = (Vec2::new(left_x, low_y), Vec2::new(right_x, high_y));
+        (r.0, r.1, r.1) // `/`: high on the right
+    } else {
+        let r = (Vec2::new(left_x, high_y), Vec2::new(right_x, low_y));
+        (r.0, r.1, Vec2::new(left_x, high_y)) // `\`: high on the left
+    };
+    ramps.slopes.0.push(Ramp { left, right });
+
+    // Wedge: the two base corners plus the high corner.
+    let tri = [
+        Vec2::new(left_x, low_y),
+        Vec2::new(right_x, low_y),
+        high_corner,
+    ];
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        tri.iter().map(|v| [v.x, v.y, 0.0]).collect::<Vec<_>>(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; 3]);
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_UV_0,
+        vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+    );
+    // Two-sided winding so the cull mode can't hide the wedge.
+    mesh.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 1]));
+    let mesh = ramps.meshes.add(mesh);
+    let material = ramps.materials.add(ColorMaterial::from(RAMP_COLOR));
+    commands.spawn((
+        MapEntity,
+        Mesh2d(mesh),
+        MeshMaterial2d(material),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+    ));
+}
+
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn handle_load_map(
     mut commands: Commands,
@@ -1265,6 +1385,7 @@ fn handle_load_map(
     map_assets: Res<Assets<MapData>>,
     assets: Res<GameAssets>,
     mut solids: ResMut<Solids>,
+    mut ramps: RampBuild,
     mut cooldown: ResMut<TransitionCooldown>,
     mut current: ResMut<CurrentRoom>,
     mut room_view: ResMut<RoomView>,
@@ -1285,6 +1406,7 @@ fn handle_load_map(
         commands.entity(entity).despawn();
     }
     solids.0.clear();
+    ramps.slopes.0.clear();
 
     let Some(handle) = assets.maps.get(&load.map) else {
         warn!("unknown map '{}'", load.map);
@@ -1368,6 +1490,11 @@ fn handle_load_map(
             mover_homes[mi],
             std::mem::take(&mut mover_parts[mi]),
         );
+    }
+
+    // Inclined tiles: register each ramp's collision surface and spawn its wedge mesh.
+    for spec in &map.slopes {
+        build_ramp(&mut commands, &mut ramps, spec, height);
     }
 
     // Parallax scenery layers for this room (despawned with the room as MapEntity).
@@ -1894,6 +2021,13 @@ mod tests {
                 col: 3,
                 row: 1,
                 ability: Ability::Dash,
+            }],
+            slopes: vec![SlopeCell {
+                col: 2,
+                row: 4,
+                run: 2,
+                rise: 1,
+                rises_right: true,
             }],
             fog_wall: vec![ArenaSpawn {
                 boss: true,

@@ -11,6 +11,72 @@ use bevy::prelude::*;
 pub const TILE: f32 = 32.0;
 const EPS: f32 = 0.01;
 
+/// A straight **ramp** surface — the diagonal an inclined tile presents. `left`/`right` are its
+/// world endpoints, ordered so `left.x < right.x`; the player rests on the line between them.
+/// The angle is free (any `rise`/`run`): built per-room by [`crate::world`] from a
+/// `(col, row, run, rise, dir)` spec, where the surface is the diagonal of that tile box.
+#[derive(Clone, Copy)]
+pub struct Ramp {
+    pub left: Vec2,
+    pub right: Vec2,
+}
+
+impl Ramp {
+    /// Surface gradient (Δy per Δx); positive rises to the right.
+    fn grad(self) -> f32 {
+        (self.right.y - self.left.y) / (self.right.x - self.left.x)
+    }
+    /// Surface height at world-x `x` (assumes `left.x <= x <= right.x`).
+    fn surface(self, x: f32) -> f32 {
+        self.left.y + (x - self.left.x) * self.grad()
+    }
+}
+
+/// The room's ramp surfaces. Kept **out of** [`Solids`] so the square resolver never treats a
+/// ramp as a full block; instead the player ground-snaps onto them (see [`slope_ground`]).
+#[derive(Resource, Default)]
+pub struct Slopes(pub Vec<Ramp>);
+
+/// How far above a ramp surface the feet may be and still snap down to it, so walking/sliding
+/// **down** a ramp sticks instead of launching off each step.
+const SLOPE_STICK: f32 = 14.0;
+
+/// Ramp surface height under world-x `x` (for the ramp whose surface is nearest `near_y`), plus
+/// its gradient (Δy/Δx — its sign says which way it descends). `None` if no ramp spans `x`.
+pub fn slope_surface_at(slopes: &Slopes, x: f32, near_y: f32) -> Option<(f32, f32)> {
+    let mut best: Option<(f32, f32)> = None;
+    for r in &slopes.0 {
+        if x < r.left.x || x > r.right.x {
+            continue;
+        }
+        let surf = r.surface(x);
+        if best.is_none_or(|(b, _)| (surf - near_y).abs() < (b - near_y).abs()) {
+            best = Some((surf, r.grad()));
+        }
+    }
+    best
+}
+
+/// Largest below-surface penetration that snaps the feet up **while grounded** — enough for the
+/// per-frame rise of walking/sliding up a ramp, but well under a tile, so standing on a floor a
+/// full tile below a ramp's high end never teleports you up onto it.
+const SLOPE_CLIMB: f32 = 16.0;
+
+/// If the player should rest on a ramp, the new centre `y` (feet on the surface). When grounded,
+/// snaps for a small upward penetration ([`SLOPE_CLIMB`], walking up) or within [`SLOPE_STICK`]
+/// above (walking down). When airborne, catches a deeper landing from above but needs the feet
+/// to actually reach the surface. `None` off any ramp, or airborne above one.
+pub fn slope_ground(slopes: &Slopes, center: Vec2, half: Vec2, was_grounded: bool) -> Option<f32> {
+    let feet = center.y - half.y;
+    let (surf, _) = slope_surface_at(slopes, center.x, feet)?;
+    let (climb, stick) = if was_grounded {
+        (SLOPE_CLIMB, SLOPE_STICK)
+    } else {
+        (TILE, 0.0)
+    };
+    (feet >= surf - climb && feet <= surf + stick).then_some(surf + half.y)
+}
+
 /// The set of solid tile cells `(col, row)` for the current map. `row` counts
 /// up from the bottom, so a cell occupies `[col*TILE, (col+1)*TILE] ×
 /// [row*TILE, (row+1)*TILE]` in world space (y up).
@@ -528,5 +594,62 @@ mod tests {
         assert!(!ducking_under(&descending(2.0, 16.0), center, half));
         // Descending but off to the side (centre not under it) → not a duck.
         assert!(!ducking_under(&descending(-2.0, 60.0), center, half));
+    }
+
+    #[test]
+    fn ramp_surface_rises_along_its_run() {
+        // A 2-wide, 1-tall ramp rising to the right: low on the left, high on the right.
+        let s = Slopes(vec![Ramp {
+            left: Vec2::new(0.0, 0.0),
+            right: Vec2::new(64.0, 32.0),
+        }]);
+        let (lo, grad) = slope_surface_at(&s, 0.0, 0.0).unwrap();
+        let (mid, _) = slope_surface_at(&s, 32.0, 0.0).unwrap();
+        let (hi, _) = slope_surface_at(&s, 64.0, 0.0).unwrap();
+        assert!((lo - 0.0).abs() < 0.1 && (mid - 16.0).abs() < 0.1 && (hi - 32.0).abs() < 0.1);
+        assert!(grad > 0.0, "rises to the right");
+        assert!(slope_surface_at(&s, 80.0, 0.0).is_none(), "off the end");
+    }
+
+    #[test]
+    fn slope_ground_snaps_feet_to_the_surface() {
+        let s = Slopes(vec![Ramp {
+            left: Vec2::new(0.0, 0.0),
+            right: Vec2::new(32.0, 32.0), // 45°: surface y == x
+        }]);
+        let half = Vec2::new(11.0, 19.0);
+        // Centre at x=16 (surface 16); feet a touch below → snap so feet seat at 16.
+        let center = Vec2::new(16.0, 16.0 + 19.0 - 5.0);
+        let y = slope_ground(&s, center, half, true).expect("on the ramp");
+        assert!(
+            (y - (16.0 + 19.0)).abs() < 0.1,
+            "feet seated on the surface"
+        );
+        // Far above the ramp while airborne → no snap (still falling).
+        assert!(slope_ground(&s, Vec2::new(16.0, 200.0), half, false).is_none());
+        // Grounded on a floor a full tile below the surface → not teleported up onto the ramp.
+        let on_floor_below = Vec2::new(30.0, (30.0 - 32.0) + 19.0); // surface 30, feet a tile under
+        assert!(slope_ground(&s, on_floor_below, half, true).is_none());
+    }
+
+    #[test]
+    fn ramp_gradient_sign_tracks_direction() {
+        let right = Ramp {
+            left: Vec2::new(0.0, 0.0),
+            right: Vec2::new(32.0, 32.0),
+        };
+        let left = Ramp {
+            left: Vec2::new(0.0, 32.0),
+            right: Vec2::new(32.0, 0.0),
+        };
+        // Downhill when grad * travel-direction < 0.
+        assert!(
+            right.grad() > 0.0,
+            "/ rises rightward (downhill going left)"
+        );
+        assert!(
+            left.grad() < 0.0,
+            "\\ rises leftward (downhill going right)"
+        );
     }
 }
