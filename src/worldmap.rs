@@ -19,6 +19,7 @@
 
 use bevy::prelude::*;
 
+use crate::input::LastInput;
 use crate::menu::Paused;
 use crate::state::GameState;
 use crate::world::{
@@ -131,6 +132,7 @@ fn open_map(
     current: Res<CurrentRoom>,
     assets: Res<GameAssets>,
     maps: Res<Assets<MapData>>,
+    last: Res<LastInput>,
     camera: Query<&Transform, With<Camera2d>>,
 ) {
     if let Some((gx, gy)) = parse_pos(&current.name) {
@@ -146,6 +148,7 @@ fn open_map(
         &maps,
         &current.name,
         &cursor,
+        *last,
     );
 }
 
@@ -169,6 +172,7 @@ fn navigate_map(
     current: Res<CurrentRoom>,
     assets: Res<GameAssets>,
     maps: Res<Assets<MapData>>,
+    last: Res<LastInput>,
     camera: Query<&Transform, With<Camera2d>>,
     overlay: Query<Entity, With<WorldMapEntity>>,
     mut highlight: Query<&mut Transform, (With<CursorHighlight>, Without<Camera2d>)>,
@@ -236,6 +240,7 @@ fn navigate_map(
             &maps,
             &current.name,
             &cursor,
+            *last,
         );
     } else if moved {
         // Full-world view: just slide the selection outline — no redraw needed.
@@ -250,6 +255,7 @@ fn navigate_map(
 // --- drawing -------------------------------------------------------------
 
 /// Draw whichever zoom level the cursor is currently on.
+#[allow(clippy::too_many_arguments)] // distinct draw inputs threaded to the zoom-level draws
 fn draw_level(
     commands: &mut Commands,
     center: Vec2,
@@ -257,16 +263,18 @@ fn draw_level(
     maps: &Assets<MapData>,
     current_name: &str,
     cursor: &MapCursor,
+    last: LastInput,
 ) {
     match cursor.zoom {
-        Zoom::World => draw_overview(commands, center, assets, maps, current_name, cursor),
-        Zoom::Window => draw_window(commands, center, assets, maps, current_name, cursor),
-        Zoom::Room => draw_zoom(commands, center, assets, maps, cursor),
+        Zoom::World => draw_overview(commands, center, assets, maps, current_name, cursor, last),
+        Zoom::Window => draw_window(commands, center, assets, maps, current_name, cursor, last),
+        Zoom::Room => draw_zoom(commands, center, assets, maps, cursor, last),
     }
 }
 
 /// The default view: a fixed `VIEW_COLS×VIEW_ROWS` window of rooms that scrolls to
 /// follow the selection, so individual rooms stay readable however many exist.
+#[allow(clippy::too_many_arguments)] // distinct draw inputs; clearer inline than bundled
 fn draw_window(
     commands: &mut Commands,
     center: Vec2,
@@ -274,6 +282,7 @@ fn draw_window(
     maps: &Assets<MapData>,
     current_name: &str,
     cursor: &MapCursor,
+    last: LastInput,
 ) {
     backdrop(commands, center);
     label(
@@ -288,7 +297,13 @@ fn draw_window(
         center,
         Vec2::new(0.0, -GRID_H / 2.0 - 34.0),
         17.0,
-        "[M] close    move: arrows / d-pad    [jump] zoom in    [X] zoom out",
+        &format!(
+            "[{}] close    move: {}    [{}] zoom in    [{}] zoom out",
+            last.map(),
+            last.move_dir(),
+            last.jump(),
+            last.zoom_out()
+        ),
     );
 
     let (cols, rows) = grid_dims(&assets.room_names);
@@ -338,6 +353,7 @@ fn draw_window(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // distinct draw inputs; clearer inline than bundled
 fn draw_overview(
     commands: &mut Commands,
     center: Vec2,
@@ -345,6 +361,7 @@ fn draw_overview(
     maps: &Assets<MapData>,
     current_name: &str,
     cursor: &MapCursor,
+    last: LastInput,
 ) {
     backdrop(commands, center);
     label(
@@ -359,7 +376,12 @@ fn draw_overview(
         center,
         Vec2::new(0.0, -GRID_H / 2.0 - 34.0),
         17.0,
-        "[M] close    move: arrows / d-pad    [jump] zoom in",
+        &format!(
+            "[{}] close    move: {}    [{}] zoom in",
+            last.map(),
+            last.move_dir(),
+            last.jump()
+        ),
     );
 
     let (cols, rows) = grid_dims(&assets.room_names);
@@ -409,6 +431,7 @@ fn draw_zoom(
     assets: &GameAssets,
     maps: &Assets<MapData>,
     cursor: &MapCursor,
+    last: LastInput,
 ) {
     backdrop(commands, center);
     let key = format!("r{}_{}", cursor.gx, cursor.gy);
@@ -431,7 +454,12 @@ fn draw_zoom(
         center,
         Vec2::new(0.0, -216.0),
         17.0,
-        "[X] zoom out    move: arrows    [M] close",
+        &format!(
+            "[{}] zoom out    move: {}    [{}] close",
+            last.zoom_out(),
+            last.move_dir(),
+            last.map()
+        ),
     );
 }
 

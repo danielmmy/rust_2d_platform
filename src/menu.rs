@@ -4,9 +4,10 @@
 //! the main list, a save-slot picker for **New Game** / **Load Game** (see
 //! [`crate::save`]), and an **Options** screen (window mode). During play, `Esc` (or the
 //! gamepad `Select` button) toggles a [`Paused`] overlay (Continue / **Character** /
-//! **Abilities** / Options / Main Menu / Quit); **Character** opens a read-only stat sheet,
-//! **Abilities** toggles unlocked abilities on/off, and **Options** the window-mode/volume
-//! settings. Gameplay is frozen while paused (the gameplay [`GameSet`](crate::GameSet) chain
+//! **Abilities** / **Controls** / Options / Main Menu / Quit); **Character** opens a read-only
+//! stat sheet, **Abilities** toggles unlocked abilities on/off, **Controls** shows the
+//! keyboard + controller layout reference, and **Options** the window-mode/volume settings.
+//! Gameplay is frozen while paused (the gameplay [`GameSet`](crate::GameSet) chain
 //! is gated on [`Paused::Running`]).
 //!
 //! The window-mode choice (windowed / borderless fullscreen) persists via
@@ -71,6 +72,8 @@ enum PauseScreen {
     Options,
     /// Toggle abilities on/off (all of them in a Builder save; only acquired in Story).
     Abilities,
+    /// A read-only reference of the keyboard + controller layouts.
+    Controls,
 }
 
 /// The name being typed for a new game (in the [`MenuScreen::NameEntry`] screen).
@@ -121,6 +124,8 @@ enum MenuAction {
     OpenOptions,
     /// Open the abilities sub-screen.
     OpenAbilities,
+    /// Open the read-only controls reference.
+    OpenControls,
     /// Toggle an ability on/off (grants/removes in a Builder save; flips active in Story).
     ToggleAbility(Ability),
     /// Set the window mode (true = borderless fullscreen).
@@ -232,6 +237,7 @@ fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
         ("Continue".to_string(), MenuAction::Continue),
         ("Character".to_string(), MenuAction::Character),
         ("Abilities".to_string(), MenuAction::OpenAbilities),
+        ("Controls".to_string(), MenuAction::OpenControls),
     ];
     if builder {
         items.push(("Edit Levels".to_string(), MenuAction::OpenEditor));
@@ -240,6 +246,45 @@ fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
     items.push(("Main Menu".to_string(), MenuAction::MainMenu));
     items.push(("Quit".to_string(), MenuAction::Quit));
     items
+}
+
+/// The control-reference rows (keyboard | controller), purely descriptive. The unlockable
+/// **abilities** are gated: in a Story save they only appear once acquired (no spoilers); a
+/// Builder save shows them all.
+fn control_lines(builder: bool, save: &Save) -> Vec<&'static str> {
+    let have = Abilities::from_csv(&save.abilities);
+    let mut lines = vec![
+        "Move:  A / D or Left / Right         |  Left Stick / D-Pad",
+        "Jump:  Space                         |  Cross",
+        "Attack:  J                           |  Square",
+    ];
+    for (ability, line) in [
+        (
+            Ability::DoubleJump,
+            "Double jump:  Space again in mid-air |  Cross",
+        ),
+        (
+            Ability::WallJump,
+            "Wall jump:  cling a wall, then Space  |  Cross",
+        ),
+        (Ability::Dash, "Dash (hold to run):  Shift or L      |  R1"),
+        (
+            Ability::Pogo,
+            "Pogo:  in mid-air, Down + J          |  Down + Square",
+        ),
+    ] {
+        if builder || have.has(ability) {
+            lines.push(line);
+        }
+    }
+    lines.extend([
+        "Look up / Crouch:  W / S or arrows   |  D-Pad Up / Down",
+        "Interact / Rest:  E                  |  Triangle",
+        "Character screen:  C                 |  L1",
+        "World map:  M                        |  Options",
+        "Pause:  Esc                          |  Share / Create",
+    ]);
+    lines
 }
 
 /// The ability sub-screen's rows: all abilities in a Builder save (grant/remove), or just the
@@ -650,6 +695,7 @@ fn main_menu_update(
         | MenuAction::Character
         | MenuAction::OpenAbilities
         | MenuAction::ToggleAbility(_)
+        | MenuAction::OpenControls
         | MenuAction::OpenEditor
         | MenuAction::MainMenu => {}
     }
@@ -681,6 +727,7 @@ fn pause_menu_update(
         PauseScreen::Character => vec![("Back".to_string(), MenuAction::Back)],
         PauseScreen::Options => options_items(&settings),
         PauseScreen::Abilities => ability_items(builder, &abilities, &save),
+        PauseScreen::Controls => vec![("Back".to_string(), MenuAction::Back)],
     };
     let Some(choice) = update_menu(&keys, &gamepads, &mut cursor, rows) else {
         return;
@@ -740,6 +787,23 @@ fn pause_menu_update(
         }
         Some(MenuAction::OpenAbilities) => {
             *screen = PauseScreen::Abilities;
+            cursor.0 = 0;
+            redraw_pause(
+                &mut commands,
+                &menu,
+                &camera,
+                *screen,
+                builder,
+                &info.stats,
+                &info.energy,
+                &info.lost,
+                &settings,
+                &abilities,
+                &save,
+            );
+        }
+        Some(MenuAction::OpenControls) => {
+            *screen = PauseScreen::Controls;
             cursor.0 = 0;
             redraw_pause(
                 &mut commands,
@@ -877,7 +941,65 @@ fn redraw_pause(
                 &labels(&ability_items(builder, abilities, save)),
             );
         }
+        PauseScreen::Controls => draw_controls_sheet(commands, center, builder, save),
     }
+}
+
+/// Draw the read-only controls reference: a title, the keyboard/controller rows, and a
+/// single selectable "Back" row. Unlockable abilities are gated in Story (see [`control_lines`]).
+fn draw_controls_sheet(commands: &mut Commands, center: Vec2, builder: bool, save: &Save) {
+    commands.spawn((
+        MenuEntity,
+        Sprite {
+            color: Color::srgba(0.03, 0.03, 0.06, 0.97),
+            custom_size: Some(Vec2::new(960.0, 540.0)),
+            ..default()
+        },
+        Transform::from_xyz(center.x, center.y, 200.0),
+    ));
+    commands.spawn((
+        MenuEntity,
+        Text2d::new("CONTROLS"),
+        TextFont {
+            font_size: FontSize::Px(40.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.95, 0.96, 1.0)),
+        Transform::from_xyz(center.x, center.y + 210.0, 201.0),
+    ));
+    commands.spawn((
+        MenuEntity,
+        Text2d::new("keyboard  |  controller (PlayStation)"),
+        TextFont {
+            font_size: FontSize::Px(15.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.55, 0.58, 0.66)),
+        Transform::from_xyz(center.x, center.y + 178.0, 201.0),
+    ));
+    for (i, line) in control_lines(builder, save).iter().enumerate() {
+        commands.spawn((
+            MenuEntity,
+            Text2d::new(*line),
+            TextFont {
+                font_size: FontSize::Px(20.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.78, 0.8, 0.88)),
+            Transform::from_xyz(center.x, center.y + 145.0 - i as f32 * 28.0, 201.0),
+        ));
+    }
+    commands.spawn((
+        MenuEntity,
+        MenuItem(0),
+        Text2d::new("Back"),
+        TextFont {
+            font_size: FontSize::Px(28.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.62, 0.64, 0.72)),
+        Transform::from_xyz(center.x, center.y - 220.0, 201.0),
+    ));
 }
 
 /// Draw the read-only character status sheet: a title, the stat/energy lines, and a

@@ -22,6 +22,8 @@ cargo run            # from crates/platformer  (or `make game-run` from the repo
 | Jump | `Space` (dedicated button) | `A` (south) |
 | Look up / Crouch | `W`/`↑` · `S`/`↓` | D-pad up · down |
 | Attack (sword) | `J` | `X` (west) |
+| **Double jump** (once unlocked) | `Space` again in mid-air | `A` again in mid-air |
+| **Wall jump** (once unlocked) | cling a wall, then `Space` | cling a wall, then `A` |
 | **Dash** (once unlocked) | `Shift` / `L` (hold to **run**) | right bumper |
 | **Pogo** (down-slash, once unlocked) | in the air, hold `↓` + `J` | in the air, hold down + `X` |
 | Interact / bench shop | `E` | `Y` (north) |
@@ -42,7 +44,9 @@ The character screen (`C`) lists what you've acquired, and the **pause menu** (`
 **acquired** abilities (turn them on/off — you can't grant unearned ones); in a **Builder**
 save it lists **all** abilities and **grants/removes** them for testing. (Bosses give no
 reward by default; place chests / set boss rewards in the builder to hand them out — see
-[Level builder](#level-builder).)
+[Level builder](#level-builder).) The pause **Controls** reference follows the same rule:
+in a Story save an ability's line stays hidden until you acquire it (no spoilers), while a
+Builder save shows them all.
 
 The game opens on a **main menu** (New Game / Load Game / **Options** / Quit). **New Game**
 and **Load Game** open a **ten-slot** picker (each labelled with its `[Story]` or
@@ -496,6 +500,17 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — Added a **Controls** reference to the pause menu ([`menu`](src/menu.rs)):
+  a read-only screen listing every action with its **keyboard** key and **controller**
+  (PlayStation) button. Descriptive only — bindings aren't configurable. The unlockable
+  abilities (double jump, wall jump, dash, pogo) are **gated in Story** — each line appears
+  only once you've acquired that ability, so the screen never spoils what you haven't found.
+  A Builder save lists them all.
+- **2026-06-29** — **Context-sensitive control hints.** A `LastInput` resource
+  ([`input`](src/input.rs)) tracks the most recently used device, and on-screen prompts now
+  match it: the bench/chest "[E] …" prompts, the character/bench overlay hint, and the world-map
+  hints switch between **keyboard keys** and **PlayStation labels** (Cross / Circle / Triangle /
+  L1 / R1 / Options) as you swap between keyboard and a controller.
 - **2026-06-29** — **Hold the dash button to run**, with its own animation. After the dash
   burst, keeping the dash button held + a direction settles into a sustained **sprint**
   (`sprint_speed`, between walk and dash speed) with a new **sprint cycle** (player sheet now

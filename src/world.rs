@@ -24,7 +24,7 @@ use crate::GameSet;
 use crate::combat::{Bloodstain, ENEMY_HALF, ENEMY_KINDS, Enemy, LostEnergy};
 use crate::hazards::{Hazard, RespawnPoint, RockSpawner, RockSprite, SPIKE_HALF};
 use crate::health::{Health, Hurt};
-use crate::input::PlayerIntent;
+use crate::input::{LastInput, PlayerIntent};
 use crate::physics::{Solids, TILE};
 use crate::player::{Abilities, Ability, JumpState, PLAYER_HALF, Player, Velocity};
 use crate::ron::{self, RonError};
@@ -663,6 +663,7 @@ fn apply_chest_save(save: Res<Save>, mut chests: ResMut<ClearedChests>) {
 #[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn chest_interact(
     intent: Res<PlayerIntent>,
+    last: Res<LastInput>,
     assets: Res<GameAssets>,
     mut abilities: ResMut<Abilities>,
     mut collected: ResMut<ClearedChests>,
@@ -671,7 +672,7 @@ fn chest_interact(
     mut commands: Commands,
     player: Query<&Transform, (With<Player>, Without<ChestPrompt>)>,
     mut chests: Query<(Entity, &Transform, &mut Sprite, &ChestItem), Without<ChestPrompt>>,
-    mut prompt: Query<(&mut Transform, &mut Visibility), With<ChestPrompt>>,
+    mut prompt: Query<(&mut Transform, &mut Visibility, &mut Text2d), With<ChestPrompt>>,
 ) {
     let Ok(player_tf) = player.single() else {
         return;
@@ -691,11 +692,12 @@ fn chest_interact(
         }
     }
 
-    if let Ok((mut prompt_tf, mut visibility)) = prompt.single_mut() {
+    if let Ok((mut prompt_tf, mut visibility, mut text)) = prompt.single_mut() {
         match nearest {
             Some((_, pos)) => {
                 prompt_tf.translation.x = pos.x;
                 prompt_tf.translation.y = pos.y + TILE;
+                text.0 = format!("[{}] open", last.interact());
                 *visibility = Visibility::Visible;
             }
             None => *visibility = Visibility::Hidden,
@@ -1643,11 +1645,13 @@ fn detect_teleport(
 /// **interact** there — open the **bench shop** (Rest / upgrade / Leave). The shop
 /// itself (resting, buying) lives in [`crate::stats`]; here we just detect the bench
 /// and hand it the cell to rest at.
+#[allow(clippy::too_many_arguments)] // a Bevy system; each param is a distinct query/resource
 fn bench_interact(
     intent: Res<PlayerIntent>,
+    last: Res<LastInput>,
     benches: Query<(&Transform, &Bench), Without<BenchPrompt>>,
     player: Query<&Transform, (With<Player>, Without<BenchPrompt>)>,
-    mut prompt: Query<(&mut Transform, &mut Visibility), With<BenchPrompt>>,
+    mut prompt: Query<(&mut Transform, &mut Visibility, &mut Text2d), With<BenchPrompt>>,
     mut bench_at: ResMut<BenchAt>,
     mut mode: ResMut<OverlayMode>,
     mut menu: ResMut<NextState<CharMenu>>,
@@ -1663,12 +1667,13 @@ fn bench_interact(
         delta.x < BENCH_HALF.x + PLAYER_HALF.x && delta.y < BENCH_HALF.y + PLAYER_HALF.y
     });
 
-    // Show the prompt above that bench, or hide it.
-    if let Ok((mut prompt_tf, mut visibility)) = prompt.single_mut() {
+    // Show the prompt above that bench (with the current device's key), or hide it.
+    if let Ok((mut prompt_tf, mut visibility, mut text)) = prompt.single_mut() {
         match on_bench {
             Some((tf, _)) => {
                 prompt_tf.translation.x = tf.translation.x;
                 prompt_tf.translation.y = tf.translation.y + TILE;
+                text.0 = format!("[{}] rest", last.interact());
                 *visibility = Visibility::Visible;
             }
             None => *visibility = Visibility::Hidden,
@@ -1692,7 +1697,7 @@ fn spawn_bench_prompt(mut commands: Commands, existing: Query<(), With<BenchProm
     }
     commands.spawn((
         BenchPrompt,
-        Text2d::new("[E] bench"),
+        Text2d::new("[E] rest"),
         TextFont {
             font_size: FontSize::Px(16.0),
             ..default()

@@ -19,6 +19,7 @@ use bevy::prelude::*;
 use crate::audio::{PlaySfx, Sfx};
 use crate::combat::{Energy, LostEnergy};
 use crate::health::Health;
+use crate::input::LastInput;
 use crate::menu::Paused;
 use crate::player::{Abilities, Ability};
 use crate::save::{self, Save};
@@ -194,7 +195,8 @@ impl Plugin for StatsPlugin {
             .add_systems(OnExit(CharMenu::Open), despawn_char_menu)
             .add_systems(
                 Update,
-                (update_overlay, refresh_ability_list).run_if(in_state(CharMenu::Open)),
+                (update_overlay, refresh_ability_list, refresh_hint)
+                    .run_if(in_state(CharMenu::Open)),
             );
     }
 }
@@ -262,6 +264,10 @@ struct CharEntity;
 /// The character screen's read-only "acquired abilities" line.
 #[derive(Component)]
 struct AbilityList;
+
+/// The overlay's control-hint line (refreshed to the last-used input device).
+#[derive(Component)]
+struct HintLine;
 
 /// A live line on the overlay, refreshed each frame.
 #[derive(Component)]
@@ -351,9 +357,9 @@ fn open_overlay(
         .map(|t| t.translation.truncate())
         .unwrap_or(Vec2::ZERO);
 
-    let (title, hint) = match *mode {
-        OverlayMode::Character => ("CHARACTER", "upgrade at a bench    [C] close"),
-        OverlayMode::Bench => ("BENCH", "[Up/Down] select   [Enter] choose   [Esc] leave"),
+    let title = match *mode {
+        OverlayMode::Character => "CHARACTER",
+        OverlayMode::Bench => "BENCH",
     };
 
     commands.spawn((
@@ -373,7 +379,18 @@ fn open_overlay(
     }
     spawn_line(&mut commands, center, -120.0, 24.0, "", Some(Line::Energy));
     spawn_line(&mut commands, center, -152.0, 18.0, "", Some(Line::Lost));
-    spawn_line(&mut commands, center, -195.0, 18.0, hint, None);
+    // The control hint refreshes each frame to match the last-used device (see `refresh_hint`).
+    commands.spawn((
+        CharEntity,
+        HintLine,
+        Text2d::new(String::new()),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.62, 0.64, 0.72)),
+        Transform::from_xyz(center.x, center.y - 195.0, 201.0),
+    ));
 
     // The character sheet lists acquired abilities (read-only; refreshed each frame).
     if *mode == OverlayMode::Character {
@@ -408,6 +425,26 @@ fn refresh_ability_list(
         "Abilities: none yet".to_string()
     } else {
         format!("Abilities: {}", names.join(", "))
+    };
+}
+
+/// Refresh the overlay's control hint to match the last-used input device.
+fn refresh_hint(
+    last: Res<LastInput>,
+    mode: Res<OverlayMode>,
+    mut line: Query<&mut Text2d, With<HintLine>>,
+) {
+    let Ok(mut text) = line.single_mut() else {
+        return;
+    };
+    text.0 = match *mode {
+        OverlayMode::Character => format!("upgrade at a bench    [{}] close", last.cancel()),
+        OverlayMode::Bench => format!(
+            "[{}] select   [{}] choose   [{}] leave",
+            last.updown(),
+            last.confirm(),
+            last.cancel()
+        ),
     };
 }
 

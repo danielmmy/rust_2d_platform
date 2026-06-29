@@ -1,5 +1,7 @@
 //! Unified input: keyboard **and** gamepad collapse into one intent resource,
-//! so the rest of the game never cares which device drove it.
+//! so the rest of the game never cares which device drove it. A [`LastInput`] resource
+//! tracks which device was used most recently, so on-screen hints can show the matching
+//! labels (keyboard keys, or PlayStation-style **Cross/Circle/Square/Triangle/L1/R1**).
 
 use bevy::prelude::*;
 
@@ -28,12 +30,97 @@ pub struct PlayerIntent {
     pub dash_held: bool,
 }
 
+/// The most recently used input device, so on-screen hints can show the right labels.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LastInput {
+    #[default]
+    Keyboard,
+    Gamepad,
+}
+
+impl LastInput {
+    fn pad(self) -> bool {
+        matches!(self, LastInput::Gamepad)
+    }
+    /// Confirm / choose — `Enter` or PlayStation **Cross**.
+    pub fn confirm(self) -> &'static str {
+        if self.pad() { "Cross" } else { "Enter" }
+    }
+    /// Jump — `Space` or **Cross** (also the world map's zoom-in).
+    pub fn jump(self) -> &'static str {
+        if self.pad() { "Cross" } else { "Space" }
+    }
+    /// Back / cancel / close — `Esc` or **Circle**.
+    pub fn cancel(self) -> &'static str {
+        if self.pad() { "Circle" } else { "Esc" }
+    }
+    /// Up/Down menu navigation.
+    pub fn updown(self) -> &'static str {
+        if self.pad() { "D-Pad" } else { "Up/Down" }
+    }
+    /// Free directional movement (e.g. the world map).
+    pub fn move_dir(self) -> &'static str {
+        if self.pad() { "D-Pad" } else { "arrows" }
+    }
+    /// Interact — `E` or **Triangle**.
+    pub fn interact(self) -> &'static str {
+        if self.pad() { "Triangle" } else { "E" }
+    }
+    /// World-map toggle — `M` or **Options**.
+    pub fn map(self) -> &'static str {
+        if self.pad() { "Options" } else { "M" }
+    }
+    /// Map zoom-out — `X` or **Circle**.
+    pub fn zoom_out(self) -> &'static str {
+        if self.pad() { "Circle" } else { "X" }
+    }
+}
+
+/// Gamepad buttons polled to notice controller use (for [`LastInput`]).
+const PAD_BUTTONS: [GamepadButton; 12] = [
+    GamepadButton::South,
+    GamepadButton::East,
+    GamepadButton::North,
+    GamepadButton::West,
+    GamepadButton::LeftTrigger,
+    GamepadButton::RightTrigger,
+    GamepadButton::Select,
+    GamepadButton::Start,
+    GamepadButton::DPadUp,
+    GamepadButton::DPadDown,
+    GamepadButton::DPadLeft,
+    GamepadButton::DPadRight,
+];
+
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerIntent>()
+            .init_resource::<LastInput>()
+            // Runs everywhere (menus included), so hints follow the device you just used.
+            .add_systems(Update, track_last_input)
             .add_systems(Update, gather.in_set(GameSet::Input));
+    }
+}
+
+/// Flip [`LastInput`] to whichever device produced input this frame (keyboard wins ties).
+fn track_last_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    gamepads: Query<&Gamepad>,
+    mut last: ResMut<LastInput>,
+) {
+    if keys.get_just_pressed().next().is_some() {
+        *last = LastInput::Keyboard;
+        return;
+    }
+    for gamepad in &gamepads {
+        let stick = gamepad.get(GamepadAxis::LeftStickX).unwrap_or(0.0).abs() > 0.5
+            || gamepad.get(GamepadAxis::LeftStickY).unwrap_or(0.0).abs() > 0.5;
+        if stick || PAD_BUTTONS.iter().any(|b| gamepad.just_pressed(*b)) {
+            *last = LastInput::Gamepad;
+            return;
+        }
     }
 }
 
