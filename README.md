@@ -294,10 +294,10 @@ pauses `rest` **ms** at each, then continues by `mode`: **`loop`** (cycle home�
 forever), **`pingpong`** (bounce back and forth), or **`once`** (stop at the last cell).
 **Solid** cells become ridable — stand on one and it **carries you** (including up/down
 lifts); non-solid cells keep their own behaviour (a moving spike still hurts). A platform
-pressing into you **squishes**: one coming **down** first **forces you to crouch** (you duck
-under it) and only **hurts** you if it keeps descending into the crouched box; one pinning you
-**sideways** against a wall **hurts** you (the knockback nudges you free — no teleport). The
-starter
+coming **down** onto you first **forces you to crouch** (you duck under it) and only **hurts**
+you (a true crush) if it keeps descending into the crouched box with no room left. Platforms
+moving **sideways** or **up**, or ones you press against from the side, just block you — they
+never crush. The starter
 rooms show one of each mode over a 3-tile block: `r0_0` a `loop` patrol, `r1_0` a
 `pingpong` slider, `r2_0` a `once` lift. (Collision is a static cell grid, so a mover's
 solid tiles are lifted out of it and resolved as dynamic AABBs — see
@@ -522,6 +522,22 @@ are deliberately simple scaffolds to build on.
 
 ## Changelog
 
+- **2026-06-29** — **False-crush fixes.** A crush now only hurts when a platform is **actively
+  descending onto you from overhead** (and you're under its span) with no room below — so
+  jumping up into a *laterally*-moving platform, or pressing against a platform's side, just
+  bonks/blocks you instead of dealing damage. The crouch now also **persists in mid-air** while
+  a low platform blocks standing, so jumping under one keeps the small hitbox (you bonk it)
+  rather than un-crouching into a false crush. Removed the separate horizontal squish (it was
+  the source of the side-press damage). ([`physics`](src/physics.rs), [`player`](src/player.rs))
+- **2026-06-29** — **Platform teleport fixed (minimum-penetration resolve).** The real cause of
+  the platform "teleports": the X pass side-pushed *any* overlap — including a player **below**
+  a platform (jumping up into it) or one it was pressing down on — flinging them out to the
+  platform's edge. Each platform is now resolved along the axis you're **least embedded in**: a
+  vertical overlap is pushed up/down (land on top / bonk your head / get crushed), only a true
+  side overlap is pushed sideways. The Y pass is now position-based, so a descending platform
+  pushes you **down** (or crushes you in place — hurt, no teleport) instead of seating you up
+  onto itself. Replaces the old shove-out squish entirely. ([`physics`](src/physics.rs),
+  [`player`](src/player.rs))
 - **2026-06-29** — **More squish/ride fixes.** Reverted an over-eager "centre must be over the
   span" rider check that was ejecting riders near a platform's **edge** to the edge; the
   rider-skip is feet-near-top again, so edge riders just walk off naturally. The **horizontal

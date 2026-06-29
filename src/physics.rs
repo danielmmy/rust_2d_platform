@@ -90,6 +90,15 @@ pub fn resolve_platforms_x(platforms: &Platforms, center: &mut Vec2, half: Vec2,
         if center.y - half.y >= b.center.y + b.half.y - CARRY_EPS {
             continue;
         }
+        // Push out sideways only for a genuine **side** hit — one embedded more horizontally
+        // than vertically. A player overlapping from below (jumping up into it) or above is a
+        // vertical hit; leave it to the Y pass, so they're never flung out to the platform's
+        // edge (minimum-penetration: resolve the axis you're least embedded in).
+        let x_pen = (half.x + b.half.x) - (center.x - b.center.x).abs();
+        let y_pen = (half.y + b.half.y) - (center.y - b.center.y).abs();
+        if y_pen <= x_pen {
+            continue;
+        }
         center.x = if dx > 0.0 {
             b.center.x - b.half.x - half.x
         } else {
@@ -115,45 +124,53 @@ pub fn wall_at(solids: &Solids, platforms: &Platforms, center: Vec2, half: Vec2,
     })
 }
 
-/// Push the AABB out of any platform it overlaps on the Y axis. Returns
-/// `(blocked, landed_on_top)`.
+/// Resolve the AABB against platforms on the Y axis, by **position** (not travel direction):
+/// a player above a platform lands on its top; one below is pushed down (head-bump). Only
+/// vertical hits are handled — a side hit (embedded more horizontally) is left to the X pass.
+/// If pushing a player down is blocked by a static solid (they're floored under a platform
+/// pressing down), that's a **vertical crush**: returned as a squish source (the caller hurts
+/// them) and *not* resolved — so a descending platform never seats the player up onto itself
+/// or shoves them sideways. Returns `(blocked, landed_on_top, squish_source)`.
 pub fn resolve_platforms_y(
+    solids: &Solids,
     platforms: &Platforms,
     center: &mut Vec2,
     half: Vec2,
-    dy: f32,
-) -> (bool, bool) {
+) -> (bool, bool, Option<Vec2>) {
     let mut blocked = false;
     let mut landed = false;
+    let mut squish = None;
     for b in &platforms.0 {
-        if dy != 0.0 && overlaps(*center, half, b) {
-            if dy < 0.0 {
-                center.y = b.center.y + b.half.y + half.y;
-                landed = true;
-            } else {
-                center.y = b.center.y - b.half.y - half.y;
-            }
+        if !overlaps(*center, half, b) {
+            continue;
+        }
+        // Vertical hits only — a side hit (more embedded horizontally) is the X pass's job.
+        let x_pen = (half.x + b.half.x) - (center.x - b.center.x).abs();
+        let y_pen = (half.y + b.half.y) - (center.y - b.center.y).abs();
+        if x_pen < y_pen {
+            continue;
+        }
+        if center.y >= b.center.y {
+            center.y = b.center.y + b.half.y + half.y; // above it → land on top
+            landed = true;
             blocked = true;
+        } else {
+            let target = b.center.y - b.half.y - half.y; // below it → push down (head-bump)
+            if !aabb_in_solid(solids, center.x, target, half) {
+                center.y = target;
+                blocked = true;
+            } else if b.delta.y < 0.0 && (center.x - b.center.x).abs() < b.half.x {
+                // Nowhere to go *and* a platform is actively pressing **down** from directly
+                // overhead (descending, you under its span) → a real **crush**: hurt.
+                squish = Some(b.center);
+            } else {
+                // Bonked the underside with no room below (a too-small gap, or a side graze, or
+                // a platform just moving past) — block the rise, but don't hurt and don't clip in.
+                blocked = true;
+            }
         }
     }
-    (blocked, landed)
-}
-
-/// Whether the AABB is supported from directly below — static ground just under the feet,
-/// or a platform top within [`CARRY_EPS`]. Used to tell a *squish* (no room to escape down)
-/// apart from a platform merely pressing a falling player downward.
-pub fn supported_below(solids: &Solids, platforms: &Platforms, center: Vec2, half: Vec2) -> bool {
-    let feet = center.y - half.y;
-    let row = to_tile(feet - EPS);
-    let col0 = to_tile(center.x - half.x + EPS);
-    let col1 = to_tile(center.x + half.x - EPS);
-    if (col0..=col1).any(|col| solids.is_solid(col, row)) {
-        return true;
-    }
-    platforms.0.iter().any(|b| {
-        (center.x - b.center.x).abs() < half.x + b.half.x
-            && (feet - (b.center.y + b.half.y)).abs() <= CARRY_EPS
-    })
+    (blocked, landed, squish)
 }
 
 /// Whether an AABB at `center` overlaps any solid tile or moving platform. The `EPS` insets
@@ -167,7 +184,7 @@ pub fn blocked(solids: &Solids, platforms: &Platforms, center: Vec2, half: Vec2)
 /// Whether a **descending** platform (`delta.y < 0`) is pressing down into the player's box
 /// from directly overhead — the player's centre is under its span and its underside has bitten
 /// into the body. Used to **force a crouch** (duck under it) rather than squish, as long as the
-/// crouched box still fits; if it doesn't, [`squish_push_x`] takes over as the crush. This is
+/// crouched box still fits; if it doesn't, [`resolve_platforms_y`] reports the crush. This is
 /// deliberately *not* "anything overlapping the standing box": a platform you ride **up**, or
 /// one you press against the **side** of, must not force a crouch.
 pub fn ducking_under(platforms: &Platforms, center: Vec2, half: Vec2) -> bool {
@@ -190,100 +207,6 @@ fn aabb_in_solid(solids: &Solids, x: f32, y: f32, half: Vec2) -> bool {
     let col0 = to_tile(x - half.x + EPS);
     let col1 = to_tile(x + half.x - EPS);
     (row0..=row1).any(|row| (col0..=col1).any(|col| solids.is_solid(col, row)))
-}
-
-/// Detect a **squish**: a *descending* platform (`delta.y < 0`) whose underside has pressed
-/// down *into* the player's body (between the feet and head — i.e. not one the player is
-/// riding on top of), overlapping in X. If so, return the x to shove the player to — out a
-/// side of the whole squishing span — and that span's centre (a knockback source). The nearer
-/// side is preferred, but a side walled off by static tiles is avoided where possible.
-///
-/// The caller should only act on this when the player is [`supported_below`]; otherwise a
-/// platform landing on an airborne player would shove them sideways instead of letting them
-/// be pushed down.
-pub fn squish_push_x(
-    solids: &Solids,
-    platforms: &Platforms,
-    center: Vec2,
-    half: Vec2,
-) -> Option<(f32, Vec2)> {
-    let (feet, head) = (center.y - half.y, center.y + half.y);
-    let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
-    let mut found = false;
-    for b in &platforms.0 {
-        if b.delta.y >= 0.0 || !overlaps(center, half, b) {
-            continue;
-        }
-        let p_bottom = b.center.y - b.half.y;
-        if p_bottom <= feet || p_bottom >= head {
-            continue; // resting on top (or no vertical bite) — not a squish
-        }
-        left = left.min(b.center.x - b.half.x);
-        right = right.max(b.center.x + b.half.x);
-        found = true;
-    }
-    if !found {
-        return None;
-    }
-    let group_center = (left + right) * 0.5;
-    let (out_left, out_right) = (left - half.x, right + half.x);
-    let prefer_left = center.x < group_center;
-    let left_ok = !aabb_in_solid(solids, out_left, center.y, half);
-    let right_ok = !aabb_in_solid(solids, out_right, center.y, half);
-    // Nearer side first; if it's walled and the other isn't, use the other. If both (or
-    // neither) are clear, keep the nearer one.
-    let new_x = match (prefer_left, left_ok, right_ok) {
-        (true, false, true) => out_right,
-        (false, true, false) => out_left,
-        (true, _, _) => out_left,
-        (false, _, _) => out_right,
-    };
-    Some((new_x, Vec2::new(group_center, center.y)))
-}
-
-/// The side-on analogue of [`squish_push_x`]: a platform moving **sideways** (`delta.x != 0`)
-/// whose leading face has pressed *into* the player's body, while a static wall at the spot it
-/// would shove the player to leaves nowhere to go horizontally. If so, return that span's centre
-/// as a knockback source — the caller **hurts** the player (the [`Hurt`](crate::health::Hurt)
-/// knockback nudges them out smoothly); it does **not** teleport them, so a crush against a wall
-/// can't fling the player up over the platform.
-pub fn squish_push_y(
-    solids: &Solids,
-    platforms: &Platforms,
-    center: Vec2,
-    half: Vec2,
-) -> Option<Vec2> {
-    let (left, right) = (center.x - half.x, center.x + half.x);
-    let (mut bottom, mut top) = (f32::INFINITY, f32::NEG_INFINITY);
-    let mut src_x = 0.0;
-    let mut found = false;
-    for b in &platforms.0 {
-        if b.delta.x == 0.0 || !overlaps(center, half, b) {
-            continue;
-        }
-        let push = b.delta.x.signum(); // direction the platform is shoving the player
-        let lead = b.center.x + push * b.half.x; // the platform face leading its motion
-        if lead <= left || lead >= right {
-            continue; // resting against an edge / riding on top — no horizontal bite
-        }
-        // Require a real side-on bite over a good chunk of the body — not a head/foot-corner
-        // graze (e.g. brushing a platform raised a tile overhead), which must not count.
-        let y_overlap = (center.y + half.y).min(b.center.y + b.half.y)
-            - (center.y - half.y).max(b.center.y - b.half.y);
-        if y_overlap < half.y {
-            continue;
-        }
-        // Only a squish if where the side-push *would* put the player is walled off.
-        let pushed_to = b.center.x + push * (b.half.x + half.x);
-        if !aabb_in_solid(solids, pushed_to, center.y, half) {
-            continue; // there's room to be pushed — a normal side-push, not a squish
-        }
-        bottom = bottom.min(b.center.y - b.half.y);
-        top = top.max(b.center.y + b.half.y);
-        src_x = b.center.x;
-        found = true;
-    }
-    found.then(|| Vec2::new(src_x, (bottom + top) * 0.5))
 }
 
 /// Move an AABB (centre + half-extents) along X by `dx`, stopping at solids.
@@ -407,72 +330,63 @@ mod tests {
     }
 
     #[test]
-    fn descending_platform_squishes_a_grounded_player() {
-        // Platform tile centred at (16, 40) (underside at y 24) coming down; player on the
-        // floor (feet 0, head 38), so the underside has bitten into the body → squish.
-        let platforms = Platforms(vec![PlatformBox {
-            center: Vec2::new(16.0, 40.0),
-            half: Vec2::splat(16.0),
-            delta: Vec2::new(0.0, -3.0),
-        }]);
-        let half = Vec2::new(11.0, 19.0);
-        let open = solids(&[]);
-        let (push_x, _src) =
-            squish_push_x(&open, &platforms, Vec2::new(16.0, 19.0), half).expect("squish");
-        // Player is at/!left-of the span centre → shoved out the right side (32 + 11).
-        assert!((push_x - 43.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn rider_on_descending_platform_is_not_squished() {
-        // Same descending platform, but the player rests on its top (feet just at the top) —
-        // the underside is below the feet, so it must not register as a squish.
+    fn lands_on_a_platform_top_from_above() {
+        // Platform [0,32]×[0,32]; player overlapping it from above (centre above the box centre)
+        // → seated on top, grounded; centre.x untouched.
         let platforms = Platforms(vec![PlatformBox {
             center: Vec2::new(16.0, 16.0),
             half: Vec2::splat(16.0),
-            delta: Vec2::new(0.0, -3.0),
+            delta: Vec2::ZERO,
         }]);
-        let half = Vec2::new(11.0, 19.0);
         let open = solids(&[]);
-        assert!(squish_push_x(&open, &platforms, Vec2::new(16.0, 50.5), half).is_none());
+        let mut center = Vec2::new(16.0, 48.0); // a touch low; feet 29 < top 32
+        let (_, landed, squish) =
+            resolve_platforms_y(&open, &platforms, &mut center, Vec2::new(11.0, 19.0));
+        assert!(landed && squish.is_none());
+        assert!((center.y - (32.0 + 19.0)).abs() < 0.1, "seated on the top");
     }
 
     #[test]
-    fn squish_pushes_away_from_a_wall() {
-        // Same descending squish, but a wall sits just left of the span — the player (nearer
-        // the left) must be shoved out the right instead of into the wall.
+    fn jumping_into_a_platform_from_below_is_not_flung_sideways() {
+        // Wide platform [0,96]×[32,64]; player centred under it, head just poking its underside.
+        // The X pass must not eject them to the platform's edge (the jump-teleport bug); the Y
+        // pass pushes them straight down instead.
         let platforms = Platforms(vec![PlatformBox {
-            center: Vec2::new(16.0, 40.0),
+            center: Vec2::new(48.0, 48.0),
+            half: Vec2::new(48.0, 16.0),
+            delta: Vec2::ZERO,
+        }]);
+        let half = Vec2::new(11.0, 19.0);
+        let mut center = Vec2::new(48.0, 15.0); // head 34 pokes the underside (32)
+        let hit_x = resolve_platforms_x(&platforms, &mut center, half, 5.0);
+        assert!(!hit_x, "a player below a platform is not side-pushed");
+        assert_eq!(
+            center.x, 48.0,
+            "centre.x unchanged — no teleport to the edge"
+        );
+
+        let open = solids(&[]);
+        let (_, _, squish) = resolve_platforms_y(&open, &platforms, &mut center, half);
+        assert!(squish.is_none() && center.y < 15.0, "pushed straight down");
+    }
+
+    #[test]
+    fn descending_platform_on_a_floored_player_is_a_crush() {
+        // Platform [0,32] underside biting a player on the floor, with the floor right below →
+        // pushing them down is blocked, so it's reported as a squish (the caller hurts them).
+        let platforms = Platforms(vec![PlatformBox {
+            center: Vec2::new(16.0, 36.0), // underside at 20
             half: Vec2::splat(16.0),
             delta: Vec2::new(0.0, -3.0),
         }]);
-        let half = Vec2::new(11.0, 19.0);
-        let walled = solids(&[(-1, 0), (-1, 1)]);
-        let (push_x, _) =
-            squish_push_x(&walled, &platforms, Vec2::new(8.0, 19.0), half).expect("squish");
+        let floor = solids(&[(0, 0)]); // [0,32]×[0,32]
+        let mut center = Vec2::new(16.0, 19.0); // feet 0 on the floor, head 38
+        let (_, _, squish) =
+            resolve_platforms_y(&floor, &platforms, &mut center, Vec2::new(11.0, 19.0));
         assert!(
-            (push_x - 43.0).abs() < 0.1,
-            "shoved right, away from the left wall"
+            squish.is_some(),
+            "floored under a descending platform → crush"
         );
-    }
-
-    #[test]
-    fn supported_below_sees_ground_not_air() {
-        let solids = solids(&[(0, 0)]); // floor tile [0,32]×[0,32]
-        let empty = Platforms(vec![]);
-        let half = Vec2::new(11.0, 19.0);
-        assert!(supported_below(
-            &solids,
-            &empty,
-            Vec2::new(16.0, 51.0),
-            half
-        )); // feet on top
-        assert!(!supported_below(
-            &solids,
-            &empty,
-            Vec2::new(16.0, 59.0),
-            half
-        )); // floating
     }
 
     #[test]
@@ -534,23 +448,20 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_squish_against_a_wall_is_detected() {
-        // Platform [0,32]×[8,40] moving right, its right face bitten into the player's body,
-        // with a wall at the spot a side-push would shove them to → squish (the caller hurts
-        // the player; no teleport).
+    fn side_press_into_a_platform_does_not_hurt() {
+        // Player pressed against the side of a platform (overlapping more vertically than
+        // horizontally), with a wall behind. Only the X pass acts (push back) — there's no
+        // crush, so no squish source, even next to a wall.
         let platforms = Platforms(vec![PlatformBox {
             center: Vec2::new(16.0, 24.0),
             half: Vec2::splat(16.0),
             delta: Vec2::new(3.0, 0.0),
         }]);
         let half = Vec2::new(11.0, 19.0);
-        let center = Vec2::new(30.0, 24.0);
-        let walls = solids(&[(1, 0)]);
-        assert!(squish_push_y(&walls, &platforms, center, half).is_some());
-
-        // With nowhere walled off, it's a normal side-push — not a squish.
-        let open = solids(&[]);
-        assert!(squish_push_y(&open, &platforms, center, half).is_none());
+        let walls = solids(&[(1, 0), (1, 1)]);
+        let mut center = Vec2::new(30.0, 24.0); // beside it; x-pen small, y-pen large
+        let (_, _, squish) = resolve_platforms_y(&walls, &platforms, &mut center, half);
+        assert!(squish.is_none(), "a side hit is not a crush");
     }
 
     #[test]

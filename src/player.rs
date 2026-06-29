@@ -357,10 +357,12 @@ pub(crate) fn movement(
         let body = transform.translation.truncate();
         let can_stand = !physics::blocked(&solids, &platforms, body, PLAYER_HALF);
         let force_duck = physics::ducking_under(&platforms, body, PLAYER_HALF);
-        let crouching = jump.grounded
-            && !dashing
+        // Crouch on the ground (Down / forced duck); stay crouched — **even in the air** — while
+        // a low ceiling or platform blocks standing, so jumping up under one keeps the small box
+        // (you bonk it) instead of un-crouching into it and registering a false crush.
+        let crouching = !dashing
             && !stunned
-            && (intent.down || force_duck || (jump.crouching && !can_stand));
+            && ((jump.grounded && (intent.down || force_duck)) || (jump.crouching && !can_stand));
         jump.crouching = crouching;
         let half = if crouching { CROUCH_HALF } else { PLAYER_HALF };
         let crouch_drop = PLAYER_HALF.y - half.y;
@@ -519,13 +521,8 @@ pub(crate) fn movement(
         center.y += carry.y;
 
         let dx = carry.x + velocity.0.x * dt;
-        let mut blocked_x = physics::collide_x(&solids, &mut center, half, dx);
-        // Horizontal squish: a sideways-moving platform pressing the player into a wall just
-        // **hurts** them (i-frames coalesce repeats); the knockback nudges them out — no teleport.
-        if let Some(src) = physics::squish_push_y(&solids, &platforms, center, half) {
-            hurt.write(Hurt::From(src));
-        }
-        blocked_x |= physics::resolve_platforms_x(&platforms, &mut center, half, dx);
+        let blocked_x = physics::collide_x(&solids, &mut center, half, dx)
+            | physics::resolve_platforms_x(&platforms, &mut center, half, dx);
         if blocked_x {
             velocity.0.x = 0.0;
         }
@@ -533,20 +530,15 @@ pub(crate) fn movement(
         let dy = velocity.0.y * dt;
         let (sb, sl) = physics::collide_y(&solids, &mut center, half, dy);
 
-        // Squish: a descending platform pressing the player down while they're supported from
-        // below. Rather than clipping them up onto its top, shove them out the nearer side and
-        // hurt them (i-frames mean repeated frames count as one hit). Crouching shrinks `half`,
-        // so a platform that clears the lowered head no longer registers as a squish.
-        if physics::supported_below(&solids, &platforms, center, half)
-            && let Some((push_x, src)) = physics::squish_push_x(&solids, &platforms, center, half)
-        {
-            center.x = push_x;
-            hurt.write(Hurt::From(src));
-        }
-
-        let (pb, pl) = physics::resolve_platforms_y(&platforms, &mut center, half, dy);
+        // Platforms on Y: land on tops, bonk heads, and report a **vertical crush** (a platform
+        // pressing you down with no room below) as a squish — hurt, not teleported. Crouching
+        // shrinks `half`, so a platform that clears the lowered head doesn't register at all.
+        let (pb, pl, squish) = physics::resolve_platforms_y(&solids, &platforms, &mut center, half);
         if sb || pb {
             velocity.0.y = 0.0;
+        }
+        if let Some(src) = squish {
+            hurt.write(Hurt::From(src));
         }
         jump.grounded = sl || pl;
 
