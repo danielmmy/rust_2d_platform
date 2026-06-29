@@ -6,6 +6,7 @@
 //! - `EMBEDDED_SPRITES: &[(&str, &[u8])]` — `(file_name, png_bytes)` for `assets/sprites/`.
 //! - `EMBEDDED_SOUNDS: &[(&str, &[u8])]` — `(file_name, ogg_bytes)` for `assets/sounds/`.
 //! - `EMBEDDED_MUSIC: &[(&str, &[u8])]` — `(file_name, ogg_bytes)` for `assets/music/`.
+//! - `EMBEDDED_FONTS: &[(&str, &[u8])]` — `(file_name, ttf_bytes)` for `assets/fonts/`.
 //!
 //! Each entry uses `include_str!`/`include_bytes!` on the file's absolute path, so the
 //! bytes are embedded and edits re-trigger the build.
@@ -47,6 +48,14 @@ fn main() {
         "include_bytes!",
         "assets/music",
         ".ogg",
+    );
+    emit(
+        &mut code,
+        "EMBEDDED_FONTS",
+        "&[u8]",
+        "include_bytes!",
+        "assets/fonts",
+        ".ttf",
     );
     let out = Path::new(&env::var("OUT_DIR").unwrap()).join("embedded_assets.rs");
     fs::write(out, code).expect("write embedded_assets.rs");

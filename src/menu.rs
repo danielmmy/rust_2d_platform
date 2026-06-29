@@ -22,6 +22,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
+use bevy::sprite::Anchor;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 
 use crate::combat::{Energy, LostEnergy};
@@ -248,43 +249,94 @@ fn pause_menu_items(builder: bool) -> Vec<(String, MenuAction)> {
     items
 }
 
-/// The control-reference rows (keyboard | controller), purely descriptive. The unlockable
-/// **abilities** are gated: in a Story save they only appear once acquired (no spoilers); a
-/// Builder save shows them all.
-fn control_lines(builder: bool, save: &Save) -> Vec<&'static str> {
+/// Icon-font tokens. PromptFont keeps plain ASCII letters legible but remaps these code
+/// points to keyboard / PlayStation-gamepad glyphs (they look like tofu in any other font,
+/// so they must be rendered with [`PromptGlyph`]). Written as `\u{..}` escapes so the source
+/// stays pure ASCII and readable in any terminal; the comment names the glyph each yields.
+mod glyph {
+    // PlayStation face buttons (PromptFont keys them off these dashed arrows by direction).
+    pub const CROSS: &str = "\u{21E3}"; // down  -> Cross
+    pub const SQUARE: &str = "\u{21E0}"; // left  -> Square
+    pub const TRIANGLE: &str = "\u{21E1}"; // up    -> Triangle
+    // Shoulders, d-pad, stick, and the menu buttons.
+    pub const L1: &str = "\u{21B0}"; // left shoulder
+    pub const R1: &str = "\u{21B1}"; // right shoulder
+    pub const DPAD_UD: &str = "\u{21A3}"; // d-pad up/down
+    pub const STICK: &str = "\u{21CD}"; // left analog stick
+    pub const OPTIONS: &str = "\u{21E8}"; // Options (Start)
+    pub const SHARE: &str = "\u{21E6}"; // Share / Create (Select)
+    // Keyboard keys (single-glyph tokens).
+    pub const SPACE: &str = "\u{243A}"; // Space key
+    pub const SHIFT: &str = "\u{2429}"; // Shift key
+    pub const ESC: &str = "\u{242F}"; // Esc key
+}
+
+/// One row of the controls sheet: a plain-text action label plus its keyboard and
+/// controller tokens (the latter two render in the icon font).
+struct ControlRow {
+    label: &'static str,
+    key: &'static str,
+    pad: &'static str,
+}
+
+impl ControlRow {
+    const fn new(label: &'static str, key: &'static str, pad: &'static str) -> Self {
+        Self { label, key, pad }
+    }
+}
+
+/// The controls grouped into titled sections. Unlockable abilities are gated: a Story save
+/// shows each only once acquired (no spoilers); a Builder save lists them all.
+fn control_sections(builder: bool, save: &Save) -> Vec<(&'static str, Vec<ControlRow>)> {
+    use glyph::*;
     let have = Abilities::from_csv(&save.abilities);
-    let mut lines = vec![
-        "Move:  A / D or Left / Right         |  Left Stick / D-Pad",
-        "Jump:  Space                         |  Cross",
-        "Attack:  J                           |  Square",
-    ];
-    for (ability, line) in [
+
+    // The combat/ability section grows with what the player has earned.
+    let mut actions = vec![ControlRow::new("Attack", "J", SQUARE)];
+    for (ability, row) in [
         (
             Ability::DoubleJump,
-            "Double jump:  Space again in mid-air |  Cross",
+            ControlRow::new("Double jump  (in mid-air)", SPACE, CROSS),
         ),
         (
             Ability::WallJump,
-            "Wall jump:  cling a wall, then Space  |  Cross",
+            ControlRow::new("Wall jump  (off a wall)", SPACE, CROSS),
         ),
-        (Ability::Dash, "Dash (hold to run):  Shift or L      |  R1"),
         (
+            Ability::Dash,
+            ControlRow::new("Dash  (hold to run)", SHIFT, R1),
+        ),
+        (
+            // Down + attack, on the ground or in the air. The pad token is a literal combo
+            // (d-pad down + Square) so it can't reuse the `glyph` consts; escapes keep it ASCII.
             Ability::Pogo,
-            "Pogo:  in mid-air, Down + J          |  Down + Square",
+            ControlRow::new("Pogo  (down-slash)", "S J", "\u{21A1} \u{21E0}"),
         ),
     ] {
         if builder || have.has(ability) {
-            lines.push(line);
+            actions.push(row);
         }
     }
-    lines.extend([
-        "Look up / Crouch:  W / S or arrows   |  D-Pad Up / Down",
-        "Interact / Rest:  E                  |  Triangle",
-        "Character screen:  C                 |  L1",
-        "World map:  M                        |  Options",
-        "Pause:  Esc                          |  Share / Create",
-    ]);
-    lines
+
+    vec![
+        (
+            "MOVEMENT",
+            vec![
+                ControlRow::new("Move", "A D", STICK),
+                ControlRow::new("Look up / crouch", "W S", DPAD_UD),
+            ],
+        ),
+        ("ACTIONS", actions),
+        (
+            "MENU",
+            vec![
+                ControlRow::new("Interact / rest", "E", TRIANGLE),
+                ControlRow::new("Character screen", "C", L1),
+                ControlRow::new("World map", "M", OPTIONS),
+                ControlRow::new("Pause", ESC, SHARE),
+            ],
+        ),
+    ]
 }
 
 /// The ability sub-screen's rows: all abilities in a Builder save (grant/remove), or just the
@@ -329,6 +381,44 @@ fn labels(items: &[(String, MenuAction)]) -> Vec<String> {
     items.iter().map(|(label, _)| label.clone()).collect()
 }
 
+/// The icon font ([PromptFont], SIL OFL 1.1) used for control-glyph rows: its ASCII
+/// alphabet stays readable while modifier keys and gamepad buttons render as glyphs.
+///
+/// [PromptFont]: https://shinmera.com/promptfont
+#[derive(Resource)]
+struct UiFonts {
+    prompt: Handle<Font>,
+}
+
+/// Marks a [`Text2d`] whose text is icon-font glyphs; [`apply_prompt_font`] swaps the
+/// default font for [`UiFonts::prompt`] the moment the row spawns.
+#[derive(Component)]
+struct PromptGlyph;
+
+/// Decode the embedded icon font into an asset once at startup.
+fn load_ui_fonts(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
+    let bytes = crate::world::EMBEDDED_FONTS
+        .iter()
+        .find(|(name, _)| *name == "promptfont.ttf")
+        .map(|(_, bytes)| *bytes)
+        .expect("embedded promptfont.ttf");
+    let prompt = fonts.add(Font::from_bytes(bytes.to_vec()));
+    commands.insert_resource(UiFonts { prompt });
+}
+
+/// Point freshly spawned [`PromptGlyph`] rows at the icon font.
+fn apply_prompt_font(
+    fonts: Option<Res<UiFonts>>,
+    mut rows: Query<&mut TextFont, Added<PromptGlyph>>,
+) {
+    let Some(fonts) = fonts else {
+        return;
+    };
+    for mut font in &mut rows {
+        font.font = FontSource::Handle(fonts.prompt.clone());
+    }
+}
+
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
@@ -338,6 +428,9 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuScreen>()
             .init_resource::<PauseScreen>()
             .init_resource::<NewGameName>()
+            // Decode the embedded icon font once, and swap it onto any glyph row as it spawns.
+            .add_systems(Startup, load_ui_fonts)
+            .add_systems(Update, apply_prompt_font.after(pause_menu_update))
             .add_systems(OnEnter(GameState::MainMenu), spawn_main_menu)
             .add_systems(OnExit(GameState::MainMenu), despawn_menu)
             .add_systems(
@@ -945,8 +1038,14 @@ fn redraw_pause(
     }
 }
 
-/// Draw the read-only controls reference: a title, the keyboard/controller rows, and a
-/// single selectable "Back" row. Unlockable abilities are gated in Story (see [`control_lines`]).
+/// X columns (relative to centre) for the label / keyboard / controller pieces of a row.
+const CTRL_LABEL_X: f32 = -460.0;
+const CTRL_KEY_X: f32 = 120.0;
+const CTRL_PAD_X: f32 = 300.0;
+
+/// Draw the read-only controls reference: a title, two glyph columns (keyboard | controller)
+/// grouped into sections, and a selectable "Back" row. The key/pad tokens render in the icon
+/// font; unlockable abilities are gated in Story (see [`control_sections`]).
 fn draw_controls_sheet(commands: &mut Commands, center: Vec2, builder: bool, save: &Save) {
     commands.spawn((
         MenuEntity,
@@ -961,44 +1060,80 @@ fn draw_controls_sheet(commands: &mut Commands, center: Vec2, builder: bool, sav
         MenuEntity,
         Text2d::new("CONTROLS"),
         TextFont {
-            font_size: FontSize::Px(40.0),
+            font_size: FontSize::Px(30.0),
             ..default()
         },
         TextColor(Color::srgb(0.95, 0.96, 1.0)),
-        Transform::from_xyz(center.x, center.y + 210.0, 201.0),
+        Transform::from_xyz(center.x, center.y + 246.0, 201.0),
     ));
-    commands.spawn((
-        MenuEntity,
-        Text2d::new("keyboard  |  controller (PlayStation)"),
-        TextFont {
-            font_size: FontSize::Px(15.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.55, 0.58, 0.66)),
-        Transform::from_xyz(center.x, center.y + 178.0, 201.0),
-    ));
-    for (i, line) in control_lines(builder, save).iter().enumerate() {
+    // Column captions over the two glyph columns.
+    for (x, cap) in [(CTRL_KEY_X, "keyboard"), (CTRL_PAD_X, "controller")] {
         commands.spawn((
             MenuEntity,
-            Text2d::new(*line),
+            Text2d::new(cap),
             TextFont {
-                font_size: FontSize::Px(20.0),
+                font_size: FontSize::Px(13.0),
                 ..default()
             },
-            TextColor(Color::srgb(0.78, 0.8, 0.88)),
-            Transform::from_xyz(center.x, center.y + 145.0 - i as f32 * 28.0, 201.0),
+            TextColor(Color::srgb(0.5, 0.53, 0.62)),
+            Transform::from_xyz(center.x + x, center.y + 214.0, 201.0),
         ));
     }
+
+    let mut y = center.y + 188.0;
+    for (header, rows) in control_sections(builder, save) {
+        commands.spawn((
+            MenuEntity,
+            Text2d::new(header),
+            TextFont {
+                font_size: FontSize::Px(16.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.95, 0.82, 0.45)),
+            Anchor::CENTER_LEFT,
+            Transform::from_xyz(center.x + CTRL_LABEL_X, y, 201.0),
+        ));
+        y -= 27.0;
+        for row in rows {
+            commands.spawn((
+                MenuEntity,
+                Text2d::new(row.label),
+                TextFont {
+                    font_size: FontSize::Px(17.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.78, 0.8, 0.88)),
+                Anchor::CENTER_LEFT,
+                Transform::from_xyz(center.x + CTRL_LABEL_X + 20.0, y, 201.0),
+            ));
+            for (x, token) in [(CTRL_KEY_X, row.key), (CTRL_PAD_X, row.pad)] {
+                commands.spawn((
+                    MenuEntity,
+                    PromptGlyph,
+                    Text2d::new(token),
+                    TextFont {
+                        font_size: FontSize::Px(23.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.86, 0.89, 1.0)),
+                    Transform::from_xyz(center.x + x, y, 201.0),
+                ));
+            }
+            y -= 26.0;
+        }
+        y -= 6.0;
+    }
+
     commands.spawn((
         MenuEntity,
         MenuItem(0),
         Text2d::new("Back"),
         TextFont {
-            font_size: FontSize::Px(28.0),
+            font_size: FontSize::Px(24.0),
             ..default()
         },
         TextColor(Color::srgb(0.62, 0.64, 0.72)),
-        Transform::from_xyz(center.x, center.y - 220.0, 201.0),
+        Transform::from_xyz(center.x, center.y - 244.0, 201.0),
     ));
 }
 

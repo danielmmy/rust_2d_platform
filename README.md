@@ -490,6 +490,17 @@ when you enter a room with a different track (so resting at a bench doesn't rest
 level builder, **`N`** cycles the current room's track. Replace a song by dropping your own
 `<theme>.ogg` in and rebuilding.
 
+### Fonts
+
+Most UI text uses Bevy's built-in font. The pause **Controls** sheet additionally draws its
+key/button glyphs with [PromptFont](https://shinmera.com/promptfont) — a single icon font
+whose ASCII alphabet stays readable while modifier keys and gamepad buttons map to glyphs. It
+lives at `assets/fonts/promptfont.ttf` (baked into the binary via [`build.rs`](build.rs), like
+the sprites and audio) and is licensed **SIL OFL 1.1** — see
+[`assets/fonts/LICENSE-PromptFont.txt`](assets/fonts/LICENSE-PromptFont.txt). Bevy's default
+font is ASCII-only, so any non-ASCII drawn in it shows up as tofu; that's why glyphs go through
+PromptFont and the rest of the on-screen text sticks to plain ASCII.
+
 ## Status
 
 Compiles against Bevy 0.19 (debug and release); the collision logic, the room
@@ -501,11 +512,15 @@ are deliberately simple scaffolds to build on.
 ## Changelog
 
 - **2026-06-29** — Added a **Controls** reference to the pause menu ([`menu`](src/menu.rs)):
-  a read-only screen listing every action with its **keyboard** key and **controller**
-  (PlayStation) button. Descriptive only — bindings aren't configurable. The unlockable
-  abilities (double jump, wall jump, dash, pogo) are **gated in Story** — each line appears
-  only once you've acquired that ability, so the screen never spoils what you haven't found.
-  A Builder save lists them all.
+  a read-only screen with the action labels grouped into **Movement / Actions / Menu**
+  sections and two glyph columns — **keyboard** and **controller**. The key/button tokens
+  render as real icons (keycaps, PlayStation face buttons, shoulders, d-pad, sticks) using
+  the embedded [PromptFont](https://shinmera.com/promptfont) icon font (SIL OFL 1.1; see
+  [`assets/fonts/`](assets/fonts/)) — Bevy's default font is ASCII-only and would draw such
+  symbols as tofu, so the glyph rows are re-fonted on spawn while labels stay in the base font.
+  Descriptive only — bindings aren't configurable. The unlockable abilities (double jump,
+  wall jump, dash, pogo) are **gated in Story** — each appears only once you've acquired that
+  ability, so the screen never spoils what you haven't found. A Builder save lists them all.
 - **2026-06-29** — **Context-sensitive control hints.** A `LastInput` resource
   ([`input`](src/input.rs)) tracks the most recently used device, and on-screen prompts now
   match it: the bench/chest "[E] …" prompts, the character/bench overlay hint, and the world-map

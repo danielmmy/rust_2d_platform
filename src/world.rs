@@ -1750,6 +1750,12 @@ mod tests {
             // Panics with a clear message if a sprite is missing or won't decode.
             embedded_sprite(&mut images, name);
         }
+
+        // The pause-menu controls reference draws its key/button glyphs in this font.
+        assert!(
+            EMBEDDED_FONTS.iter().any(|(n, _)| *n == "promptfont.ttf"),
+            "embedded UI icon font is missing"
+        );
     }
 
     /// Every room on disk must parse with our RON reader, have content, and only
