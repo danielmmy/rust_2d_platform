@@ -18,7 +18,7 @@ use std::time::Duration;
 use bevy::prelude::*;
 
 use crate::boss::{Boss, BossPose};
-use crate::combat::{ENEMY_KINDS, Enemy};
+use crate::combat::{ENEMY_KINDS, Enemy, Sword};
 use crate::health::Invuln;
 use crate::input::PlayerIntent;
 use crate::player::{JumpState, MovementConfig, Player, Velocity};
@@ -147,7 +147,7 @@ impl Plugin for AnimationPlugin {
 // --- player --------------------------------------------------------------
 
 const PLAYER_COLS: u32 = 6;
-const PLAYER_ROWS: u32 = 8;
+const PLAYER_ROWS: u32 = 11;
 /// Minimum horizontal speed (px/s) before the walk cycle plays.
 const WALK_SPEED_MIN: f32 = 12.0;
 
@@ -208,6 +208,27 @@ const PLAYER_CROUCH_WALK: Clip = Clip {
     fps: 9.0,
     playback: Playback::Loop,
 };
+/// Static dash pose (a quick horizontal burst — the low forward lunge), held for the dash.
+const PLAYER_DASH: Clip = Clip {
+    first: 48,
+    count: 1,
+    fps: 1.0,
+    playback: Playback::Loop,
+};
+/// Sword swing — a short down-forward arc, cycled fast over the brief live window.
+const PLAYER_ATTACK: Clip = Clip {
+    first: 54,
+    count: 4,
+    fps: 18.0,
+    playback: Playback::Loop,
+};
+/// Mid-air down-stab (pogo) pose: the blade held below the feet.
+const PLAYER_POGO: Clip = Clip {
+    first: 60,
+    count: 2,
+    fps: 8.0,
+    playback: Playback::Loop,
+};
 
 /// Give the player a texture atlas + idle [`SpriteAnimation`] once its sheet loads.
 #[allow(clippy::type_complexity)] // a Bevy query filter; clearer inline than aliased
@@ -244,6 +265,7 @@ fn control_player(
     invuln: Res<Invuln>,
     cfg: Res<MovementConfig>,
     intent: Res<PlayerIntent>,
+    sword: Res<Sword>,
     mut player: Query<(&JumpState, &Velocity, &mut SpriteAnimation), With<Player>>,
 ) {
     let Ok((jump, velocity, mut anim)) = player.single_mut() else {
@@ -252,6 +274,14 @@ fn control_player(
 
     if invuln.0 > 0.0 {
         anim.play(PLAYER_DAMAGE);
+    } else if sword.pogo_swing() {
+        // Mid-air down-stab (pogo): blade below the feet.
+        anim.play(PLAYER_POGO);
+    } else if sword.swinging() {
+        // A swing's hitbox is live — the attack pose overrides movement briefly.
+        anim.play(PLAYER_ATTACK);
+    } else if jump.dashing() {
+        anim.play(PLAYER_DASH);
     } else if !jump.grounded() {
         anim.play(PLAYER_JUMP);
         // Manual: a single run across the arc — launch (frame 0) → apex (mid) → max

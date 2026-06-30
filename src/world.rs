@@ -1154,8 +1154,10 @@ fn enter_playing(
             Velocity::default(),
             JumpState::default(),
             Sprite {
+                // 40×40 sheet frames rendered at 2× (chunky 8-bit); the ~27px-tall character
+                // fills ~1.7 tiles, with the rest of the square frame transparent margin.
                 image: assets.player.clone(),
-                custom_size: Some(Vec2::new(24.0, 40.0)),
+                custom_size: Some(Vec2::new(80.0, 80.0)),
                 ..default()
             },
             Transform::from_xyz(0.0, 0.0, 10.0),

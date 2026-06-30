@@ -489,7 +489,7 @@ const SLASH_TIME: f32 = 0.12;
 /// swing is live — its direction, whether it's a downward (pogo) strike, whether that
 /// strike has already bounced, and which enemies it has already hit.
 #[derive(Resource, Default)]
-struct Sword {
+pub(crate) struct Sword {
     step: u8,
     cooldown: f32,
     combo_window: f32,
@@ -500,6 +500,17 @@ struct Sword {
     /// A down-swing has already bounced the player (so it pogos once per swing).
     pogoed: bool,
     hit: HashSet<Entity>,
+}
+
+impl Sword {
+    /// A swing's hitbox is currently live (drives the attack pose).
+    pub(crate) fn swinging(&self) -> bool {
+        self.active > 0.0
+    }
+    /// The live swing is a downward (pogo) strike (drives the pogo pose).
+    pub(crate) fn pogo_swing(&self) -> bool {
+        self.active > 0.0 && self.down
+    }
 }
 
 /// A short-lived slash effect sprite.

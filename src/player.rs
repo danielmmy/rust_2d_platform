@@ -33,13 +33,14 @@ use crate::physics::{self, Platforms, Slopes, Solids};
 use crate::save::Save;
 use crate::state::GameState;
 
-/// Collision half-extents (the sprite is a touch larger).
-pub const PLAYER_HALF: Vec2 = Vec2::new(11.0, 19.0);
+/// Collision half-extents — standing ~1.7 tiles tall (the sprite's feet sit at a fixed frame
+/// row, so this height aligns the visible feet with the box).
+pub const PLAYER_HALF: Vec2 = Vec2::new(11.0, 27.0);
 
-/// Collision half-extents while crouching — same width, ~⅔ the height (matching the squashed
-/// crouch pose), so the player fits under a one-tile gap (a low ceiling or a passing
-/// platform). The box shrinks from the **top** with the feet planted (see [`movement`]).
-pub const CROUCH_HALF: Vec2 = Vec2::new(11.0, 12.0);
+/// Collision half-extents while crouching — same width, just under one tile tall (matching the
+/// squashed crouch pose), so the player still fits under a one-tile gap (a low ceiling or a
+/// passing platform). The box shrinks from the **top** with the feet planted (see [`movement`]).
+pub const CROUCH_HALF: Vec2 = Vec2::new(11.0, 15.0);
 
 /// Seconds between footstep sounds while running on the ground.
 const FOOTSTEP_INTERVAL: f32 = 0.30;
@@ -104,6 +105,11 @@ impl JumpState {
     /// Whether the player is mid-slide (read by animation and the slide-tackle hitbox).
     pub fn sliding(&self) -> bool {
         self.slide > 0.0
+    }
+
+    /// Whether the player is mid-dash (read by animation for the dash pose).
+    pub fn dashing(&self) -> bool {
+        self.dash > 0.0
     }
 
     /// Whether the player is sprinting (read by animation for the run cycle).
